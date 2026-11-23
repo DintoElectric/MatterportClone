@@ -167,6 +167,7 @@
       <select id="cleanStart">
         <option value="light" selected>Light (recommended)</option>
         <option value="strong">Strong</option>
+        <option value="patches">Light, and hide flat patches</option>
         <option value="off">Off</option>
       </select>
     </div>
@@ -218,6 +219,7 @@
       <option value="off">Off</option>
       <option value="light">Light</option>
       <option value="strong">Strong</option>
+      <option value="patches">Light, and hide flat patches</option>
     </select>
     <p class="sub" id="cleanStat">Removes small floating fragments and thin streaks. It cannot fill holes or fix stretched textures.</p>
   </div>
@@ -364,6 +366,9 @@ const CLEAN_LEVELS = {
   off: null,
   light: { minDiag: 0.4, sliverL: 1.0, aspect: 0.008 },
   strong: { minDiag: 1.0, sliverL: 0.5, aspect: 0.03 },
+  // Light, plus triangles that have almost no texture area (about 1 px per metre against 240 to 330 for
+  // the rest of a Matterport mesh). Those are single-colour filler patches, the smooth smears over walls.
+  patches: { minDiag: 0.4, sliverL: 1.0, aspect: 0.008, minDens: 20 },
 };
 // Welds vertices (1 cm), finds connected pieces across all meshes, and measures each triangle.
 function analyzeMeshes(meshes) {
@@ -405,7 +410,8 @@ function analyzeMeshes(meshes) {
   });
   meshes.forEach((m, k) => {
     const a = m.geometry.attributes.position.array, ids = wid[k], tris = Math.floor(ids.length / 3);
-    const diag = new Float32Array(tris), L = new Float32Array(tris), asp = new Float32Array(tris);
+    const diag = new Float32Array(tris), L = new Float32Array(tris), asp = new Float32Array(tris), dens = new Float32Array(tris).fill(1e9);
+    const uvAttr = m.geometry.attributes.uv, uv = uvAttr && uvAttr.itemSize === 2 ? uvAttr.array : null;
     for (let t = 0; t < tris; t++) {
       const i0 = 9 * t, r = find(ids[3 * t]) * 6;
       diag[t] = Math.hypot(bb[r + 3] - bb[r], bb[r + 4] - bb[r + 1], bb[r + 5] - bb[r + 2]);
@@ -416,8 +422,12 @@ function analyzeMeshes(meshes) {
       const twoArea = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
       L[t] = lmax;
       asp[t] = lmax > 1e-9 ? twoArea / (lmax * lmax) : 0;   // 0.87 equilateral, near 0 for a streak
+      if (uv && twoArea > 1e-9) {
+        const u0 = 6 * t, f1x = uv[u0 + 2] - uv[u0], f1y = uv[u0 + 3] - uv[u0 + 1], f2x = uv[u0 + 4] - uv[u0], f2y = uv[u0 + 5] - uv[u0 + 1];
+        dens[t] = 2048 * Math.sqrt(Math.abs(f1x * f2y - f1y * f2x) / twoArea);   // texture pixels per metre, for a 2048 atlas
+      }
     }
-    m.userData.clean = { tris, diag, L, asp };
+    m.userData.clean = { tris, diag, L, asp, dens };
   });
 }
 // Hides triangles through an index buffer, so the original geometry is kept and any level can be re-applied.
@@ -441,6 +451,7 @@ function applyCleanupTo(meshes, level) {
       for (let t = r.start / 3; t < (r.start + r.count) / 3; t++) {
         if (info.diag[t] < cfg.minDiag) continue;
         if (info.L[t] > cfg.sliverL && info.asp[t] < cfg.aspect) continue;
+        if (cfg.minDens && info.dens[t] < cfg.minDens) continue;
         idx[n++] = 3 * t; idx[n++] = 3 * t + 1; idx[n++] = 3 * t + 2;
       }
       if (groups0.length) newGroups.push({ start: startN, count: n - startN, materialIndex: r.materialIndex });
