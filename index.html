@@ -53,6 +53,7 @@
   #manifestList .note { color: var(--muted); }
   .opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
   select { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .opt label small { display: block; color: var(--muted); font-weight: 400; font-size: 14px; }
   .err { color: var(--danger); font-weight: 500; margin: 14px 0 0; line-height: 1.4; }
 
   #titlebar { position: fixed; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; gap: 2px; background: rgba(245,246,247,.92); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
@@ -160,6 +161,18 @@
         <option value="1024">Reduced (1024 px), for tablets</option>
       </select>
     </div>
+    <div class="opt">
+      <label for="cleanStart">Mesh cleanup</label>
+      <select id="cleanStart">
+        <option value="light" selected>Light (recommended)</option>
+        <option value="strong">Strong</option>
+        <option value="off">Off</option>
+      </select>
+    </div>
+    <div class="opt">
+      <label>Panorama photos (optional)<small id="panoCount">None added. You can add them later.</small></label>
+      <button id="pickPanos" class="ghost">Add photos</button>
+    </div>
     <div class="row">
       <button id="openBtn" class="primary">Open space</button>
       <button id="repick" class="ghost">Pick different files</button>
@@ -197,6 +210,15 @@
   </div>
   <div class="field">
     <label class="check"><input type="checkbox" id="showMesh" checked> Show textured mesh</label>
+  </div>
+  <div class="field">
+    <label for="cleanSel">Mesh cleanup</label>
+    <select id="cleanSel" style="width:100%">
+      <option value="off">Off</option>
+      <option value="light">Light</option>
+      <option value="strong">Strong</option>
+    </select>
+    <p class="sub" id="cleanStat">Removes small floating fragments and thin streaks. It cannot fill holes or fix stretched textures.</p>
   </div>
   <div class="field" id="cloudField" hidden>
     <div class="lbl">Point cloud</div>
@@ -252,6 +274,7 @@
 
 <nav id="toolbar" hidden aria-label="Viewer tools">
   <div class="seg" role="group" aria-label="View">
+    <button id="bPhoto" aria-pressed="false">Photos</button>
     <button id="bDoll" aria-pressed="true">Dollhouse</button>
     <button id="bTop" aria-pressed="false">Top</button>
     <button id="bWalk" aria-pressed="false">Walk</button>
@@ -259,7 +282,7 @@
   <button id="bMeasure" aria-pressed="false">Measure</button>
   <button id="bSection" aria-pressed="false">Section</button>
   <button id="bPlans" hidden>Plans</button>
-  <button id="bPanos" aria-pressed="false">Panos</button>
+  <button id="bPanos" aria-pressed="false">Photo list</button>
   <button id="bAlign" aria-pressed="false" hidden>Align</button>
   <span class="gap"></span>
   <button id="bSave" class="ghost">Save view</button>
@@ -331,6 +354,103 @@ function stepWalker(meshes, st, mx, mz, dt, collide) {
 }
 // </walk-logic>
 
+/* ---------- mesh cleanup (floating fragments and thin streaks) ---------- */
+// <cleanup-logic>
+const CLEAN_LEVELS = {
+  off: null,
+  light: { minDiag: 0.4, sliverL: 1.0, aspect: 0.008 },
+  strong: { minDiag: 1.0, sliverL: 0.5, aspect: 0.03 },
+};
+// Welds vertices (1 cm), finds connected pieces across all meshes, and measures each triangle.
+function analyzeMeshes(meshes) {
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  for (const m of meshes) { m.geometry.computeBoundingBox(); min.min(m.geometry.boundingBox.min); }
+  const Q = 100, W = 131072;
+  const vmap = new Map();
+  const wid = meshes.map((m) => {
+    const a = m.geometry.attributes.position.array, n = a.length / 3, ids = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const key = Math.floor((a[3 * i] - min.x) * Q) + W * (Math.floor((a[3 * i + 1] - min.y) * Q) + W * Math.floor((a[3 * i + 2] - min.z) * Q));
+      let id = vmap.get(key);
+      if (id === undefined) { id = vmap.size; vmap.set(key, id); }
+      ids[i] = id;
+    }
+    return ids;
+  });
+  const nW = vmap.size; vmap.clear();
+  const parent = new Int32Array(nW);
+  for (let i = 0; i < nW; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  meshes.forEach((m, k) => {
+    const ids = wid[k];
+    for (let t = 0; t + 2 < ids.length; t += 3) {
+      const a = find(ids[t]), b = find(ids[t + 1]), c = find(ids[t + 2]);
+      const r = Math.min(a, b, c);
+      parent[a] = r; parent[b] = r; parent[c] = r;
+    }
+  });
+  const bb = new Float32Array(nW * 6);
+  for (let i = 0; i < nW; i++) { bb[6 * i] = bb[6 * i + 1] = bb[6 * i + 2] = Infinity; bb[6 * i + 3] = bb[6 * i + 4] = bb[6 * i + 5] = -Infinity; }
+  meshes.forEach((m, k) => {
+    const a = m.geometry.attributes.position.array, ids = wid[k];
+    for (let i = 0; i < ids.length; i++) {
+      const r = find(ids[i]) * 6, x = a[3 * i], y = a[3 * i + 1], z = a[3 * i + 2];
+      if (x < bb[r]) bb[r] = x; if (y < bb[r + 1]) bb[r + 1] = y; if (z < bb[r + 2]) bb[r + 2] = z;
+      if (x > bb[r + 3]) bb[r + 3] = x; if (y > bb[r + 4]) bb[r + 4] = y; if (z > bb[r + 5]) bb[r + 5] = z;
+    }
+  });
+  meshes.forEach((m, k) => {
+    const a = m.geometry.attributes.position.array, ids = wid[k], tris = Math.floor(ids.length / 3);
+    const diag = new Float32Array(tris), L = new Float32Array(tris), asp = new Float32Array(tris);
+    for (let t = 0; t < tris; t++) {
+      const i0 = 9 * t, r = find(ids[3 * t]) * 6;
+      diag[t] = Math.hypot(bb[r + 3] - bb[r], bb[r + 4] - bb[r + 1], bb[r + 5] - bb[r + 2]);
+      const e1x = a[i0 + 3] - a[i0], e1y = a[i0 + 4] - a[i0 + 1], e1z = a[i0 + 5] - a[i0 + 2];
+      const e2x = a[i0 + 6] - a[i0], e2y = a[i0 + 7] - a[i0 + 1], e2z = a[i0 + 8] - a[i0 + 2];
+      const e3x = a[i0 + 6] - a[i0 + 3], e3y = a[i0 + 7] - a[i0 + 4], e3z = a[i0 + 8] - a[i0 + 5];
+      const lmax = Math.max(Math.hypot(e1x, e1y, e1z), Math.hypot(e2x, e2y, e2z), Math.hypot(e3x, e3y, e3z));
+      const twoArea = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+      L[t] = lmax;
+      asp[t] = lmax > 1e-9 ? twoArea / (lmax * lmax) : 0;   // 0.87 equilateral, near 0 for a streak
+    }
+    m.userData.clean = { tris, diag, L, asp };
+  });
+}
+// Hides triangles through an index buffer, so the original geometry is kept and any level can be re-applied.
+function applyCleanupTo(meshes, level) {
+  const cfg = CLEAN_LEVELS[level] || null;
+  let removed = 0, total = 0;
+  for (const m of meshes) {
+    const g = m.geometry, info = m.userData.clean;
+    if (!g.userData.groups0) g.userData.groups0 = g.groups.map((x) => ({ start: x.start, count: x.count, materialIndex: x.materialIndex }));
+    const groups0 = g.userData.groups0;
+    const tris = Math.floor(g.attributes.position.count / 3);
+    total += tris;
+    const restore = () => { g.setIndex(null); g.clearGroups(); for (const x of groups0) g.addGroup(x.start, x.count, x.materialIndex); };
+    if (!cfg || !info) { restore(); continue; }
+    const ranges = groups0.length ? groups0 : [{ start: 0, count: tris * 3, materialIndex: 0 }];
+    const idx = new Uint32Array(tris * 3);
+    const newGroups = [];
+    let n = 0;
+    for (const r of ranges) {
+      const startN = n;
+      for (let t = r.start / 3; t < (r.start + r.count) / 3; t++) {
+        if (info.diag[t] < cfg.minDiag) continue;
+        if (info.L[t] > cfg.sliverL && info.asp[t] < cfg.aspect) continue;
+        idx[n++] = 3 * t; idx[n++] = 3 * t + 1; idx[n++] = 3 * t + 2;
+      }
+      if (groups0.length) newGroups.push({ start: startN, count: n - startN, materialIndex: r.materialIndex });
+    }
+    if (n === 0) { restore(); continue; }          // never empty a whole mesh
+    removed += tris - n / 3;
+    g.setIndex(new THREE.BufferAttribute(idx.slice(0, n), 1));
+    g.clearGroups();
+    for (const x of newGroups) g.addGroup(x.start, x.count, x.materialIndex);
+  }
+  return { removed, total };
+}
+// </cleanup-logic>
+
 /* ---------- renderer, scene, camera ---------- */
 const canvas = $('#gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -360,6 +480,7 @@ const S = {
   orbitPose: null, prevMode: 'dollhouse',
   top: 0, bot: 0, ymin: 0, span: 1, cutTop: 1000, cutBot: 0,
   meshOn: true, cloud: null, cloudAbort: false,
+  pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
   panos: [], pano: null, panoToken: 0, panoFov: 75, overlay: 0, saved: new Map(), placingPano: null, materials: [], lru: [],
 };
 const planeTop = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
@@ -544,13 +665,23 @@ async function openSpace() {
     root.rotation.x = -Math.PI / 2;
     root.updateMatrixWorld(true);
 
-    setStage('Building the collision index', 0.85);
+    S.meshes = meshes;
+    S.cleanLevel = $('#cleanStart').value;
+    if (S.cleanLevel !== 'off') {
+      setStage('Cleaning up the mesh', 0.8);
+      await tick();
+      analyzeMeshes(meshes); S.analyzed = true;
+      S.cleanStat = applyCleanupTo(meshes, S.cleanLevel);
+    }
+
+    setStage('Building the collision index', 0.88);
     await tick();
     try {
       const bvh = await import('three-mesh-bvh');
       THREE.Mesh.prototype.raycast = bvh.acceleratedRaycast;
-      for (const m of meshes) m.geometry.computeBoundsTree = bvh.computeBoundsTree;
-      for (const m of meshes) m.geometry.computeBoundsTree();
+      for (const m of meshes) { m.geometry.computeBoundsTree = bvh.computeBoundsTree; m.geometry.disposeBoundsTree = bvh.disposeBoundsTree; }
+      S.bvh = bvh;
+      buildBVH();
       S.hasBVH = true;
     } catch (err) {
       console.warn('three-mesh-bvh unavailable, walk mode will not collide.', err);
@@ -578,6 +709,13 @@ async function openSpace() {
     controls.enabled = true;
     goDollhouse(true);
     applyCut();
+    updateCleanStat();
+    if (S.pending.length) {
+      addPanoFiles(S.pending);
+      const first = S.panos.find((q) => q.placed);
+      if (first) enterPano(first);
+      else { $('#panoPanel').hidden = false; updateToolbar(); setHint('Tap Place next to a photo, then tap the floor where it was taken.'); }
+    }
     if (missing.size) showNotice(`${missing.size} texture file${missing.size > 1 ? 's were' : ' was'} not found, so some surfaces will look blank: ${[...missing].slice(0, 3).join(', ')}${missing.size > 3 ? ', and more' : ''}.`);
   } catch (err) {
     console.error(err);
@@ -659,6 +797,7 @@ function updateToolbar() {
   $('#bTop').setAttribute('aria-pressed', S.mode === 'top' && !S.placing);
   $('#bWalk').setAttribute('aria-pressed', S.mode === 'walk' || S.placing);
   $('#bMeasure').setAttribute('aria-pressed', S.measure);
+  $('#bPhoto').setAttribute('aria-pressed', S.mode === 'pano');
   $('#bMeasure').disabled = S.mode === 'walk' || S.mode === 'pano';
   $('#bPanos').setAttribute('aria-pressed', !$('#panoPanel').hidden);
   $('#bAlign').hidden = S.mode !== 'pano';
@@ -1175,7 +1314,7 @@ async function enterPano(p, opts = {}) {
     leaveOrbit();
     S.mode = 'pano'; controls.enabled = false;
   }
-  S.pano = p; S.placing = false; S.placingPano = null;
+  S.pano = p; S.lastPano = p; S.placing = false; S.placingPano = null;
   if (S.measure) toggleMeasure(false);
   panoMat.map = tex; panoMat.needsUpdate = true;
   panoGroup.visible = true;
@@ -1232,6 +1371,44 @@ $('#expPlace').onclick = () => {
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   a.download = 'panorama-placements.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+};
+
+/* ---------- cleanup controls, photo-first entry ---------- */
+function buildBVH() {
+  for (const m of S.meshes) { const g = m.geometry; if (g.boundsTree) g.disposeBoundsTree(); g.computeBoundsTree(); }
+}
+function updateCleanStat() {
+  $('#cleanSel').value = S.cleanLevel;
+  const st = S.cleanStat;
+  $('#cleanStat').textContent = S.cleanLevel === 'off' || !st
+    ? 'Removes small floating fragments and thin streaks. It cannot fill holes or fix stretched textures.'
+    : `Hid ${st.removed.toLocaleString()} of ${st.total.toLocaleString()} triangles (${((100 * st.removed) / Math.max(1, st.total)).toFixed(1)}%). It cannot fill holes or fix stretched textures.`;
+}
+$('#cleanSel').onchange = async (e) => {
+  const level = e.target.value;
+  if (!S.root || level === S.cleanLevel) return;
+  setStage('Applying mesh cleanup', 0.4);
+  await tick();
+  if (level !== 'off' && !S.analyzed) { analyzeMeshes(S.meshes); S.analyzed = true; }
+  S.cleanStat = applyCleanupTo(S.meshes, level);
+  S.cleanLevel = level;
+  if (S.bvh) { setStage('Rebuilding the collision index', 0.8); await tick(); buildBVH(); }
+  $('#progress').hidden = true;
+  updateCleanStat();
+};
+
+const startPanoInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.insp,image/*' });
+startPanoInput.onchange = () => {
+  S.pending = [...startPanoInput.files];
+  $('#panoCount').textContent = S.pending.length ? `${S.pending.length} photo${S.pending.length > 1 ? 's' : ''} selected` : 'None added. You can add them later.';
+};
+$('#pickPanos').onclick = () => startPanoInput.click();
+
+$('#bPhoto').onclick = () => {
+  if (S.mode === 'pano') { const el = $('#panoPanel'); el.hidden = !el.hidden; if (!el.hidden) renderPanoList(); updateToolbar(); return; }
+  const target = S.lastPano && S.lastPano.placed ? S.lastPano : S.panos.find((q) => q.placed);
+  if (target) enterPano(target);
+  else { $('#panoPanel').hidden = false; renderPanoList(); updateToolbar(); setHint(S.panos.length ? 'Tap Place next to a photo, then tap the floor where it was taken.' : 'Tap Add photos to load your 360° photos.'); setTimeout(() => { if (S.mode !== 'pano') setHint(''); }, 5000); }
 };
 
 /* ---------- save image, new ---------- */
