@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dinto Space Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f5f6f7;
+    --ink: #17212b;
+    --muted: #5b6874;
+    --line: #c9d1d8;
+    --accent: #0d5c91;
+    --accent-ink: #ffffff;
+    --measure: #e0820d;
+    --view: #d6dbe0;
+    --danger: #a62b1f;
+    --font: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--view); color: var(--ink); font-family: var(--font); font-size: 16px; overflow: hidden; }
+  body { font-variant-numeric: tabular-nums; -webkit-tap-highlight-color: transparent; }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .mlabel { position: absolute; transform: translate(-50%, -140%); background: var(--ink); color: #fff; font-weight: 600; font-size: 14px; padding: 4px 9px; border-radius: 6px; white-space: nowrap; border: 2px solid var(--measure); }
+
+  button, select, input { font: inherit; color: inherit; }
+  button { min-height: 44px; padding: 0 16px; border: 1px solid var(--line); background: var(--paper); border-radius: 8px; cursor: pointer; font-weight: 500; }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, input:focus-visible, select:focus-visible, .drop:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary:hover { background: #0a4a76; }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .45; cursor: default; }
+  [hidden] { display: none !important; }
+
+  .card { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 28px; box-shadow: 0 10px 40px rgba(23,33,43,.14); }
+  .card h1 { margin: 0 0 6px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+  .lede { margin: 0 0 20px; color: var(--muted); line-height: 1.45; max-width: 60ch; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 24px 18px; text-align: center; transition: border-color .15s, background .15s; }
+  .drop.over { border-color: var(--accent); background: #e9f1f7; }
+  .drop p { margin: 0 0 14px; font-size: 18px; font-weight: 500; }
+  .drop small { display: block; margin-top: 14px; color: var(--muted); line-height: 1.4; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  #manifest { margin-top: 20px; }
+  #manifestList { list-style: none; margin: 0 0 16px; padding: 0; border-top: 1px solid var(--line); }
+  #manifestList li { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  #manifestList .ok { color: var(--ink); }
+  #manifestList .bad { color: var(--danger); font-weight: 600; }
+  #manifestList .note { color: var(--muted); }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  select { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .err { color: var(--danger); font-weight: 500; margin: 14px 0 0; line-height: 1.4; }
+
+  #titlebar { position: fixed; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; gap: 2px; background: rgba(245,246,247,.92); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+  #titlebar strong { font-weight: 600; }
+  #titlebar span { color: var(--muted); font-size: 14px; }
+
+  #progress { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 24px)); background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; box-shadow: 0 10px 40px rgba(23,33,43,.14); }
+  #progress p { margin: 0 0 12px; font-weight: 500; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #progress button { margin-top: 14px; }
+
+  #hint { position: fixed; left: 50%; top: calc(14px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); max-width: calc(100vw - 24px); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 10px; line-height: 1.35; text-align: center; }
+  #notice { position: fixed; left: 12px; bottom: calc(86px + env(safe-area-inset-bottom, 0px)); max-width: min(420px, calc(100vw - 24px)); background: #fff7e8; border: 1px solid var(--measure); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.4; }
+  #notice button { min-height: 32px; margin-top: 6px; padding: 0 12px; }
+
+  #toolbar { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); display: flex; gap: 8px; align-items: center; max-width: calc(100vw - 16px); overflow-x: auto; padding: 8px; background: rgba(245,246,247,.95); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 6px 24px rgba(23,33,43,.14); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+  .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); background: transparent; }
+  .seg button:last-child { border-right: 0; }
+  #toolbar > button { flex: none; }
+  #toolbar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .gap { width: 1px; align-self: stretch; background: var(--line); flex: none; }
+
+  .panel { position: fixed; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 110px); overflow: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: 0 6px 24px rgba(23,33,43,.14); }
+  .panel h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+  .field { margin-bottom: 16px; }
+  .field > label, .field > .lbl { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-weight: 500; }
+  .field output { color: var(--muted); font-weight: 400; }
+  input[type=range] { width: 100%; height: 32px; accent-color: var(--accent); }
+  .check { display: flex; align-items: center; gap: 10px; min-height: 36px; font-weight: 500; }
+  .check input { width: 20px; height: 20px; accent-color: var(--accent); }
+  .field .row { justify-content: flex-start; }
+  .sub { color: var(--muted); font-size: 14px; line-height: 1.4; margin: 6px 0 0; }
+
+  #mlist { right: auto; left: 12px; top: auto; bottom: calc(86px + env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100vw - 24px)); max-height: 40vh; }
+  #mlist ul { list-style: none; margin: 0 0 10px; padding: 0; }
+  #mlist li { padding: 8px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+  #mlist li small { grid-column: 1; color: var(--muted); }
+  #mlist li button { grid-row: 1 / span 2; grid-column: 2; min-height: 32px; padding: 0 10px; }
+
+  #plans { position: fixed; inset: 0; background: rgba(23,33,43,.55); display: flex; align-items: center; justify-content: center; padding: 12px; }
+  #plansBox { background: var(--paper); border-radius: 14px; width: min(1000px, 100%); height: min(760px, 100%); display: flex; flex-direction: column; overflow: hidden; }
+  #plansBar { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; align-items: center; }
+  #plansBar button { flex: none; }
+  #plansBar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  #plansBar .spacer { flex: 1; }
+  #plansView { flex: 1; overflow: auto; background: #2b3138; text-align: center; }
+  #plansView img { max-width: 100%; max-height: 100%; cursor: zoom-in; vertical-align: middle; }
+  #plansView.zoom img { max-width: none; max-height: none; width: 220%; cursor: zoom-out; }
+
+  #joystick { position: fixed; left: calc(24px + env(safe-area-inset-left, 0px)); bottom: calc(100px + env(safe-area-inset-bottom, 0px)); width: 124px; height: 124px; border-radius: 50%; background: rgba(245,246,247,.7); border: 2px solid var(--line); touch-action: none; }
+  #joystick i { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.3/build/index.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="gl" tabindex="0" aria-label="3D view of the scanned space"></canvas>
+<div id="labels"></div>
+
+<header id="titlebar" hidden><strong>Dinto Space Viewer</strong><span id="extents"></span></header>
+
+<section id="start" class="card">
+  <h1>Open a MatterPak</h1>
+  <p class="lede">Choose the unzipped MatterPak folder. Files are read on this device and are never uploaded.</p>
+  <div id="drop" class="drop" tabindex="0">
+    <p>Drop the folder here</p>
+    <div class="row">
+      <button id="pickFolder" class="primary">Choose folder</button>
+      <button id="pickFiles" class="ghost">Choose files</button>
+    </div>
+    <small>If your browser has no folder picker (iPad, for example), use Choose files and select everything in the folder.</small>
+  </div>
+  <div id="manifest" hidden>
+    <ul id="manifestList"></ul>
+    <div class="opt">
+      <label for="texSize">Texture size</label>
+      <select id="texSize">
+        <option value="0">Full resolution</option>
+        <option value="1024">Reduced (1024 px), for tablets</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="openBtn" class="primary">Open space</button>
+      <button id="repick" class="ghost">Pick different files</button>
+    </div>
+  </div>
+  <p id="startError" class="err" role="alert" hidden></p>
+</section>
+
+<div id="progress" hidden role="status">
+  <p id="progressText">Starting</p>
+  <div class="bar"><i id="progressBar"></i></div>
+  <button id="cancelCloud" class="ghost" hidden>Cancel point cloud</button>
+</div>
+
+<div id="hint" hidden role="status"></div>
+<div id="notice" hidden><span id="noticeText"></span><br><button id="noticeClose" class="ghost">Dismiss</button></div>
+
+<aside id="mlist" class="panel" hidden>
+  <h2>Measurements</h2>
+  <ul id="mItems"></ul>
+  <button id="mClear" class="ghost">Clear all</button>
+</aside>
+
+<aside id="section" class="panel" hidden>
+  <h2>Section and display</h2>
+  <div class="field">
+    <label for="cutTop">Remove above <output id="cutTopOut">off</output></label>
+    <input type="range" id="cutTop" min="0" max="1000" value="1000">
+  </div>
+  <div class="field">
+    <label for="cutBot">Remove below <output id="cutBotOut">off</output></label>
+    <input type="range" id="cutBot" min="0" max="1000" value="0">
+    <p class="sub">Heights are measured from the lowest point of the scan. Lower the top slider to take the ceiling off and see into the rooms.</p>
+  </div>
+  <div class="field">
+    <label class="check"><input type="checkbox" id="showMesh" checked> Show textured mesh</label>
+  </div>
+  <div class="field" id="cloudField" hidden>
+    <div class="lbl">Point cloud</div>
+    <div class="row">
+      <select id="cloudBudget" aria-label="Point budget">
+        <option value="1000000">1 million points</option>
+        <option value="3000000" selected>3 million points</option>
+        <option value="6000000">6 million points</option>
+      </select>
+      <button id="loadCloud">Load</button>
+    </div>
+    <label class="check" id="showCloudRow" hidden><input type="checkbox" id="showCloud" checked> Show points</label>
+    <p class="sub">The full cloud is too large for a browser, so it is thinned evenly while loading.</p>
+  </div>
+</aside>
+
+<div id="plans" hidden>
+  <div id="plansBox">
+    <div id="plansBar"></div>
+    <div id="plansView"><img id="plansImg" alt="Plan view"></div>
+  </div>
+</div>
+
+<div id="joystick" hidden><i></i></div>
+
+<nav id="toolbar" hidden aria-label="Viewer tools">
+  <div class="seg" role="group" aria-label="View">
+    <button id="bDoll" aria-pressed="true">Dollhouse</button>
+    <button id="bTop" aria-pressed="false">Top</button>
+    <button id="bWalk" aria-pressed="false">Walk</button>
+  </div>
+  <button id="bMeasure" aria-pressed="false">Measure</button>
+  <button id="bSection" aria-pressed="false">Section</button>
+  <button id="bPlans" hidden>Plans</button>
+  <span class="gap"></span>
+  <button id="bSave" class="ghost">Save view</button>
+  <button id="bNew" class="ghost">New</button>
+</nav>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+
+const $ = (s) => document.querySelector(s);
+
+/* ---------- units ---------- */
+function fmtImperial(m) {
+  let q = Math.round((m / 0.0254) * 4);           // quarter inches
+  const feet = Math.floor(q / 48); q -= feet * 48;
+  const inch = Math.floor(q / 4);
+  const frac = ['', '¼', '½', '¾'][q % 4];
+  return `${feet}' ${inch}${frac}"`;
+}
+const fmtMetric = (m) => `${m.toFixed(2)} m`;
+
+/* ---------- walk logic (collision and floor following) ---------- */
+// <walk-logic>
+const EYE = 1.65, RADIUS = 0.35, STEP = 0.55;
+const _ray = new THREE.Raycaster();
+_ray.firstHitOnly = true;
+const _o = new THREE.Vector3(), _d = new THREE.Vector3();
+
+function castFirst(meshes, origin, dir, far) {
+  _ray.set(origin, dir);
+  _ray.near = 0; _ray.far = far;
+  const hits = _ray.intersectObjects(meshes, false);
+  return hits.length ? hits[0] : null;
+}
+function floorAt(meshes, x, feetY, z) {
+  _o.set(x, feetY + STEP + 0.05, z);
+  _d.set(0, -1, 0);
+  const h = castFirst(meshes, _o, _d, STEP + 0.05 + 1.2);
+  return h ? h.point.y : null;
+}
+function blockedAlong(meshes, x, feetY, z, dx, dz, len) {
+  const l = Math.hypot(dx, dz);
+  if (l < 1e-9) return false;
+  _d.set(dx / l, 0, dz / l);
+  for (const h of [0.35, 0.9, 1.5]) {
+    _o.set(x, feetY + h, z);
+    if (castFirst(meshes, _o, _d, RADIUS + len)) return true;
+  }
+  return false;
+}
+// st = { x, y, z, targetY }. mx, mz = world velocity in metres per second.
+function stepWalker(meshes, st, mx, mz, dt, collide) {
+  const dx = mx * dt, dz = mz * dt;
+  if (Math.abs(dx) + Math.abs(dz) > 0) {
+    if (!collide) {
+      st.x += dx; st.z += dz;
+    } else {
+      let nx = st.x, nz = st.z;
+      if (Math.abs(dx) > 0 && !blockedAlong(meshes, st.x, st.y, st.z, dx, 0, Math.abs(dx))) nx += dx;
+      if (Math.abs(dz) > 0 && !blockedAlong(meshes, nx, st.y, st.z, 0, dz, Math.abs(dz))) nz += dz;
+      const fy = floorAt(meshes, nx, st.y, nz);
+      if (fy !== null && fy - st.y <= STEP) { st.x = nx; st.z = nz; st.targetY = fy; }
+    }
+  }
+  st.y += (st.targetY - st.y) * Math.min(1, dt * 10);
+}
+// </walk-logic>
+
+/* ---------- renderer, scene, camera ---------- */
+const canvas = $('#gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#d6dbe0');
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.05, 1000);
+camera.position.set(8, 8, 8);
+const controls = new OrbitControls(camera, canvas);
+controls.screenSpacePanning = true;
+controls.enableDamping = false;
+controls.enabled = false;
+
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+/* ---------- app state ---------- */
+const S = {
+  sel: null,           // classified selection
+  root: null, meshes: [], hasBVH: false, bvh: null,
+  box: new THREE.Box3(), diag: 20,
+  mode: 'dollhouse', placing: false, measure: false,
+  orbitPose: null, prevMode: 'dollhouse',
+  top: 0, bot: 0, ymin: 0, span: 1, cutTop: 1000, cutBot: 0,
+  meshOn: true, cloud: null, cloudAbort: false,
+};
+const planeTop = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+const planeBot = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+/* ---------- small UI helpers ---------- */
+const tick = () => new Promise((r) => setTimeout(r, 30));
+function setStage(text, frac) {
+  $('#progress').hidden = false;
+  $('#progressText').textContent = text;
+  if (frac != null) $('#progressBar').style.width = Math.round(frac * 100) + '%';
+}
+function setHint(text) { const h = $('#hint'); h.textContent = text || ''; h.hidden = !text; }
+function showNotice(text) { $('#noticeText').textContent = text; $('#notice').hidden = false; }
+$('#noticeClose').onclick = () => { $('#notice').hidden = true; };
+const fmtMB = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB');
+
+/* ---------- file selection ---------- */
+function classify(list) {
+  const files = [...list];
+  const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+  const num = (f) => parseInt((f.name.match(/_(\d+)\./) || [0, 0])[1], 10);
+  const jpgs = files.filter((f) => /\.jpe?g$/i.test(f.name));
+  const floor = jpgs.filter((f) => /^colorplan(_\d+)?\.jpe?g$/i.test(f.name)).sort((a, b) => num(a) - num(b));
+  const ceil = jpgs.filter((f) => /^ceilingcolorplan(_\d+)?\.jpe?g$/i.test(f.name)).sort((a, b) => num(a) - num(b));
+  const plan = new Set([...floor, ...ceil]);
+  return {
+    byName,
+    obj: files.find((f) => /\.obj$/i.test(f.name)),
+    mtl: files.find((f) => /\.mtl$/i.test(f.name)),
+    textures: jpgs.filter((f) => !plan.has(f)),
+    floor, ceil,
+    cloud: byName.get('cloud.xyz'),
+  };
+}
+function showManifest(sel) {
+  S.sel = sel;
+  const ul = $('#manifestList');
+  ul.innerHTML = '';
+  const row = (name, status, cls) => {
+    const li = document.createElement('li');
+    const a = document.createElement('span'); a.textContent = name;
+    const b = document.createElement('span'); b.textContent = status; b.className = cls;
+    li.append(a, b); ul.append(li);
+  };
+  row('Mesh (.obj)', sel.obj ? fmtMB(sel.obj.size) : 'Not found', sel.obj ? 'ok' : 'bad');
+  row('Materials (.mtl)', sel.mtl ? 'Found' : 'Not found', sel.mtl ? 'ok' : 'bad');
+  row('Texture images', sel.textures.length ? `${sel.textures.length} found` : 'None found', sel.textures.length ? 'ok' : 'bad');
+  row('Floor plans', sel.floor.length ? `${sel.floor.length} found` : 'None', sel.floor.length ? 'ok' : 'note');
+  row('Ceiling plans', sel.ceil.length ? `${sel.ceil.length} found` : 'None', sel.ceil.length ? 'ok' : 'note');
+  row('Point cloud (optional)', sel.cloud ? fmtMB(sel.cloud.size) : 'Not included', sel.cloud ? 'ok' : 'note');
+  $('#manifest').hidden = false;
+  $('#drop').hidden = true;
+  $('#openBtn').disabled = !(sel.obj && sel.mtl && sel.textures.length);
+  const err = $('#startError');
+  if (!sel.obj || !sel.mtl) {
+    err.textContent = 'This selection is missing the .obj or .mtl file. Choose the whole unzipped MatterPak folder, with every file in it.';
+    err.hidden = false;
+  } else err.hidden = true;
+}
+function acceptFiles(list) {
+  if (!list || !list.length) return;
+  showManifest(classify(list));
+}
+const folderInput = Object.assign(document.createElement('input'), { type: 'file', webkitdirectory: true, multiple: true });
+const filesInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true });
+folderInput.onchange = () => acceptFiles(folderInput.files);
+filesInput.onchange = () => acceptFiles(filesInput.files);
+$('#pickFolder').onclick = () => folderInput.click();
+$('#pickFiles').onclick = () => filesInput.click();
+$('#repick').onclick = () => { $('#manifest').hidden = true; $('#drop').hidden = false; $('#startError').hidden = true; folderInput.value = ''; filesInput.value = ''; };
+
+async function filesFromDrop(dt) {
+  // Entries must be collected synchronously, before the first await.
+  const entries = [...dt.items].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (entry) => {
+    if (entry.isFile) out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const e of batch) await walk(e);
+      } while (batch.length);
+    }
+  };
+  for (const e of entries) await walk(e);
+  return out;
+}
+const drop = $('#drop');
+['dragenter', 'dragover'].forEach((t) => window.addEventListener(t, (e) => { e.preventDefault(); if (!$('#start').hidden) drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach((t) => window.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+window.addEventListener('drop', async (e) => {
+  if ($('#start').hidden) return;
+  acceptFiles(await filesFromDrop(e.dataTransfer));
+});
+
+/* ---------- opening the space ---------- */
+const urlCache = new Map();
+const objectUrlFor = (file) => {
+  const k = file.name.toLowerCase();
+  if (!urlCache.has(k)) urlCache.set(k, URL.createObjectURL(file));
+  return urlCache.get(k);
+};
+function downscale(tex, max) {
+  const img = tex.image;
+  if (!img || !img.width) return;
+  const big = Math.max(img.width, img.height);
+  if (big <= max) return;
+  const s = max / big;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(img.width * s));
+  c.height = Math.max(1, Math.round(img.height * s));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  tex.image = c;
+  tex.needsUpdate = true;
+}
+
+async function openSpace() {
+  const sel = S.sel;
+  $('#start').hidden = true;
+  const texMax = parseInt($('#texSize').value, 10) || 0;
+  try {
+    setStage('Reading materials', 0.03);
+    await tick();
+    const mtlText = await sel.mtl.text();
+    setStage('Reading mesh file', 0.08);
+    await tick();
+    const objText = await sel.obj.text();
+
+    const missing = new Set();
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier((url) => {
+      let base = url.split('/').pop().split('\\').pop();
+      try { base = decodeURIComponent(base); } catch (_) { /* keep raw */ }
+      const f = sel.byName.get(base.toLowerCase());
+      if (!f) { missing.add(base); return 'data:image/gif;base64,R0lGODlhAQABAAAAACw='; }
+      return objectUrlFor(f);
+    });
+    manager.onProgress = (_u, loaded, total) => setStage(`Loading textures (${loaded} of ${total})`, 0.12 + 0.38 * (loaded / total));
+
+    const creator = new MTLLoader(manager).parse(mtlText, '');
+    const texLines = (mtlText.match(/^\s*map_Kd\s/gim) || []).length;
+    const texturesDone = texLines ? new Promise((res) => { manager.onLoad = res; }) : Promise.resolve();
+    creator.preload();
+    await texturesDone;
+
+    setStage('Building the mesh. Large files take a few seconds.', 0.55);
+    await tick();
+    const loader = new OBJLoader();
+    loader.setMaterials(creator);
+    const root = loader.parse(objText);
+
+    setStage('Preparing materials', 0.75);
+    await tick();
+    const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const cache = new Map();
+    const toBasic = (old) => {
+      if (cache.has(old)) return cache.get(old);
+      const map = old.map || null;
+      if (map) {
+        map.colorSpace = THREE.SRGBColorSpace;
+        map.anisotropy = maxAniso;
+        if (texMax) downscale(map, texMax);
+      }
+      const m = new THREE.MeshBasicMaterial({ map, color: map ? 0xffffff : (old.color || 0x999999), side: THREE.DoubleSide });
+      cache.set(old, m);
+      return m;
+    };
+    const meshes = [];
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = Array.isArray(o.material) ? o.material.map(toBasic) : toBasic(o.material);
+      meshes.push(o);
+    });
+    if (!meshes.length) throw new Error('The .obj file did not contain any mesh geometry.');
+
+    // MatterPak is right-handed, Z up, 1 unit = 1 metre. three.js is Y up.
+    root.rotation.x = -Math.PI / 2;
+    root.updateMatrixWorld(true);
+
+    setStage('Building the collision index', 0.85);
+    await tick();
+    try {
+      const bvh = await import('three-mesh-bvh');
+      THREE.Mesh.prototype.raycast = bvh.acceleratedRaycast;
+      for (const m of meshes) m.geometry.computeBoundsTree = bvh.computeBoundsTree;
+      for (const m of meshes) m.geometry.computeBoundsTree();
+      S.hasBVH = true;
+    } catch (err) {
+      console.warn('three-mesh-bvh unavailable, walk mode will not collide.', err);
+      S.hasBVH = false;
+    }
+
+    scene.add(root);
+    S.root = root; S.meshes = meshes;
+    S.box.setFromObject(root);
+    const size = S.box.getSize(new THREE.Vector3());
+    S.diag = size.length();
+    S.ymin = S.box.min.y; S.span = Math.max(0.1, size.y);
+    camera.far = S.diag * 12; camera.updateProjectionMatrix();
+    controls.minDistance = 1; controls.maxDistance = S.diag * 4;
+    $('#extents').textContent = `${fmtImperial(size.x)} by ${fmtImperial(size.z)}, ${fmtImperial(size.y)} tall`;
+
+    // plans
+    await setupPlans(sel);
+    if (sel.cloud) $('#cloudField').hidden = false;
+
+    $('#progress').hidden = true;
+    $('#titlebar').hidden = false;
+    $('#toolbar').hidden = false;
+    controls.enabled = true;
+    goDollhouse(true);
+    applyCut();
+    if (missing.size) showNotice(`${missing.size} texture file${missing.size > 1 ? 's were' : ' was'} not found, so some surfaces will look blank: ${[...missing].slice(0, 3).join(', ')}${missing.size > 3 ? ', and more' : ''}.`);
+  } catch (err) {
+    console.error(err);
+    $('#progress').hidden = true;
+    $('#start').hidden = false;
+    const e = $('#startError');
+    e.textContent = `Could not open this space. ${err && err.message ? err.message : ''} If the file is very large, try the reduced texture size.`;
+    e.hidden = false;
+  }
+}
+$('#openBtn').onclick = openSpace;
+
+/* ---------- camera modes ---------- */
+function goDollhouse(fresh) {
+  const c = S.box.getCenter(new THREE.Vector3());
+  camera.fov = 45; camera.updateProjectionMatrix();
+  controls.minPolarAngle = 0; controls.maxPolarAngle = Math.PI / 2 - 0.02;
+  controls.enabled = true;
+  if (fresh || !S.orbitPose) {
+    camera.position.copy(c).add(new THREE.Vector3(0.55, 0.75, 0.85).multiplyScalar(S.diag * 0.85));
+    controls.target.copy(c);
+  } else {
+    camera.position.copy(S.orbitPose.pos); controls.target.copy(S.orbitPose.target);
+  }
+  controls.update();
+}
+function goTop() {
+  const c = controls.target.clone();
+  camera.fov = 35; camera.updateProjectionMatrix();
+  controls.minPolarAngle = 0; controls.maxPolarAngle = 0;
+  controls.enabled = true;
+  camera.position.set(c.x, c.y + S.diag * 1.2, c.z + 0.001);
+  controls.update();
+}
+function saveOrbit() { S.orbitPose = { pos: camera.position.clone(), target: controls.target.clone() }; }
+
+const walk = { x: 0, y: 0, z: 0, targetY: 0, yaw: 0, pitch: 0 };
+const keys = new Set();
+const joy = { fwd: 0, str: 0 };
+
+function startPlacing() {
+  if (S.mode === 'walk') return;
+  S.placing = !S.placing;
+  if (S.measure) toggleMeasure(false);
+  setHint(S.placing ? 'Tap the floor where you want to stand. Use Section to take the ceiling off if it is in the way.' : '');
+  updateToolbar();
+}
+function enterWalk(point) {
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  if (Math.hypot(dir.x, dir.z) > 0.15) walk.yaw = Math.atan2(-dir.x, -dir.z);
+  walk.pitch = 0;
+  if (S.mode !== 'walk') { S.prevMode = S.mode; if (S.mode === 'dollhouse') saveOrbit(); }
+  walk.x = point.x; walk.z = point.z; walk.y = point.y; walk.targetY = point.y;
+  S.mode = 'walk'; S.placing = false;
+  controls.enabled = false;
+  camera.fov = 70; camera.updateProjectionMatrix();
+  applyCut();
+  $('#joystick').hidden = !matchMedia('(pointer: coarse)').matches;
+  setHint(S.hasBVH ? 'Drag to look. Move with W A S D or the stick. Shift to go faster.' : 'Drag to look. Move with W A S D or the stick. Collision is off because the index could not load.');
+  setTimeout(() => { if (S.mode === 'walk') setHint(''); }, 6000);
+  updateToolbar();
+}
+function exitWalk() {
+  $('#joystick').hidden = true;
+  keys.clear(); joy.fwd = 0; joy.str = 0;
+}
+function setMode(next) {
+  if (S.mode === 'walk') exitWalk();
+  S.placing = false; setHint('');
+  if (next === 'top') { if (S.mode === 'dollhouse') saveOrbit(); S.mode = 'top'; goTop(); }
+  else { S.mode = 'dollhouse'; goDollhouse(false); }
+  applyCut(); updateToolbar();
+}
+function updateToolbar() {
+  $('#bDoll').setAttribute('aria-pressed', S.mode === 'dollhouse' && !S.placing);
+  $('#bTop').setAttribute('aria-pressed', S.mode === 'top' && !S.placing);
+  $('#bWalk').setAttribute('aria-pressed', S.mode === 'walk' || S.placing);
+  $('#bMeasure').setAttribute('aria-pressed', S.measure);
+  $('#bMeasure').disabled = S.mode === 'walk';
+  $('#bSection').setAttribute('aria-pressed', !$('#section').hidden);
+}
+$('#bDoll').onclick = () => setMode('dollhouse');
+$('#bTop').onclick = () => setMode('top');
+$('#bWalk').onclick = () => { if (S.mode === 'walk') setMode(S.prevMode); else startPlacing(); };
+
+/* ---------- section cut ---------- */
+function applyCut() {
+  S.top = S.ymin + S.span * (S.cutTop / 1000);
+  S.bot = S.ymin + S.span * (S.cutBot / 1000);
+  planeTop.constant = S.top;
+  planeBot.constant = -S.bot;
+  const active = [];
+  if (S.cutTop < 1000) active.push(planeTop);
+  if (S.cutBot > 0) active.push(planeBot);
+  renderer.clippingPlanes = S.mode === 'walk' ? [] : active;
+  $('#cutTopOut').textContent = S.cutTop >= 1000 ? 'off' : fmtImperial(S.top - S.ymin);
+  $('#cutBotOut').textContent = S.cutBot <= 0 ? 'off' : fmtImperial(S.bot - S.ymin);
+}
+const inRange = (y) => S.mode === 'walk' || ((S.cutTop >= 1000 || y <= S.top) && (S.cutBot <= 0 || y >= S.bot));
+$('#cutTop').oninput = (e) => { S.cutTop = Math.max(+e.target.value, S.cutBot + 5); e.target.value = S.cutTop; applyCut(); };
+$('#cutBot').oninput = (e) => { S.cutBot = Math.min(+e.target.value, S.cutTop - 5); e.target.value = S.cutBot; applyCut(); };
+$('#bSection').onclick = () => { $('#section').hidden = !$('#section').hidden; updateToolbar(); };
+$('#showMesh').onchange = (e) => { S.meshOn = e.target.checked; if (S.root) S.meshes.forEach((m) => { m.visible = S.meshOn; }); };
+
+/* ---------- picking and measuring ---------- */
+const pickRay = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function pick(cx, cy, wantFloor) {
+  if (!S.meshOn) return null;
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  pickRay.setFromCamera(ndc, camera);
+  for (const h of pickRay.intersectObjects(S.meshes, false)) {
+    if (!inRange(h.point.y)) continue;
+    if (wantFloor) {
+      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+      if (pickRay.ray.direction.dot(n) > 0) n.negate();
+      if (n.y < 0.6) continue;
+    }
+    return h;
+  }
+  return null;
+}
+
+const measures = [];
+let pending = null;
+const mMat = new THREE.MeshBasicMaterial({ color: 0xe0820d, depthTest: false, depthWrite: false });
+const lMat = new THREE.LineBasicMaterial({ color: 0xe0820d, depthTest: false, depthWrite: false });
+const sphere = new THREE.SphereGeometry(1, 16, 12);
+function marker(p) {
+  const m = new THREE.Mesh(sphere, mMat);
+  m.position.copy(p); m.renderOrder = 999;
+  scene.add(m);
+  return m;
+}
+function toggleMeasure(on) {
+  S.measure = on;
+  if (on) { S.placing = false; setHint('Tap a start point, then an end point.'); $('#mlist').hidden = false; }
+  else { setHint(''); if (pending) { scene.remove(pending.m); pending = null; } if (!measures.length) $('#mlist').hidden = true; }
+  updateToolbar();
+}
+$('#bMeasure').onclick = () => toggleMeasure(!S.measure);
+function addMeasurePoint(p) {
+  if (!pending) { pending = { p: p.clone(), m: marker(p) }; setHint('Now tap the end point.'); return; }
+  const a = pending.p, b = p.clone(), ma = pending.m, mb = marker(b);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), lMat);
+  line.renderOrder = 998; scene.add(line);
+  const el = document.createElement('div'); el.className = 'mlabel';
+  const dist = a.distanceTo(b);
+  el.textContent = fmtImperial(dist);
+  $('#labels').append(el);
+  const item = { a, b, ma, mb, line, el, dist };
+  measures.push(item);
+  pending = null;
+  setHint('Tap a start point, then an end point.');
+  renderMeasureList();
+}
+function renderMeasureList() {
+  const ul = $('#mItems'); ul.innerHTML = '';
+  measures.forEach((m, i) => {
+    const li = document.createElement('li');
+    const t = document.createElement('span');
+    t.textContent = `${fmtImperial(m.dist)} (${fmtMetric(m.dist)})`;
+    const d = document.createElement('small');
+    const vert = Math.abs(m.a.y - m.b.y), horiz = Math.hypot(m.a.x - m.b.x, m.a.z - m.b.z);
+    d.textContent = `Horizontal ${fmtImperial(horiz)}, vertical ${fmtImperial(vert)}`;
+    const x = document.createElement('button'); x.className = 'ghost'; x.textContent = 'Remove';
+    x.onclick = () => removeMeasure(i);
+    li.append(t, d, x); ul.append(li);
+  });
+}
+function removeMeasure(i) {
+  const m = measures.splice(i, 1)[0];
+  scene.remove(m.ma, m.mb, m.line); m.line.geometry.dispose(); m.el.remove();
+  renderMeasureList();
+  if (!measures.length && !S.measure) $('#mlist').hidden = true;
+}
+$('#mClear').onclick = () => { while (measures.length) removeMeasure(0); };
+
+const _v = new THREE.Vector3();
+function updateOverlays() {
+  const all = pending ? [pending.m] : [];
+  measures.forEach((m) => all.push(m.ma, m.mb));
+  for (const m of all) m.scale.setScalar(Math.max(0.01, camera.position.distanceTo(m.position) * 0.008));
+  const w = window.innerWidth, h = window.innerHeight;
+  for (const m of measures) {
+    _v.copy(m.a).add(m.b).multiplyScalar(0.5).project(camera);
+    const vis = _v.z < 1 && _v.z > -1;
+    m.el.style.display = vis ? 'block' : 'none';
+    m.el.style.left = ((_v.x + 1) / 2) * w + 'px';
+    m.el.style.top = ((1 - _v.y) / 2) * h + 'px';
+  }
+}
+
+/* ---------- pointer handling (clicks, look-drag, joystick) ---------- */
+let down = null, lookId = null, lookLast = null;
+canvas.addEventListener('pointerdown', (e) => {
+  down = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId };
+  if (S.mode === 'walk') { lookId = e.pointerId; lookLast = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (S.mode === 'walk' && e.pointerId === lookId && lookLast) {
+    walk.yaw += (e.clientX - lookLast.x) * 0.004;
+    walk.pitch = Math.max(-1.2, Math.min(1.2, walk.pitch + (e.clientY - lookLast.y) * 0.004));
+    lookLast = { x: e.clientX, y: e.clientY };
+  }
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (e.pointerId === lookId) { lookId = null; lookLast = null; }
+  if (!down || down.id !== e.pointerId) return;
+  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+  const quick = performance.now() - down.t < 600;
+  down = null;
+  if (moved > 6 || !quick) return;
+  if (S.placing) {
+    const h = pick(e.clientX, e.clientY, true);
+    if (h) enterWalk(h.point); else setHint('No floor there. Tap a floor surface, or take the ceiling off in Section.');
+  } else if (S.measure && S.mode !== 'walk') {
+    const h = pick(e.clientX, e.clientY, false);
+    if (h) addMeasurePoint(h.point);
+  }
+});
+canvas.addEventListener('pointercancel', () => { lookId = null; lookLast = null; down = null; });
+
+window.addEventListener('keydown', (e) => {
+  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  keys.add(e.code);
+  if (S.mode === 'walk' && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'Escape') { if (S.mode === 'walk') setMode(S.prevMode); else if (S.placing) startPlacing(); else if (S.measure) toggleMeasure(false); }
+});
+window.addEventListener('keyup', (e) => keys.delete(e.code));
+window.addEventListener('blur', () => keys.clear());
+
+const stick = $('#joystick');
+let stickId = null;
+function stickMove(e) {
+  const r = stick.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  let dx = e.clientX - cx, dy = e.clientY - cy;
+  const l = Math.hypot(dx, dy), max = 50;
+  if (l > max) { dx = (dx / l) * max; dy = (dy / l) * max; }
+  stick.firstElementChild.style.transform = `translate(${dx}px, ${dy}px)`;
+  joy.str = dx / max; joy.fwd = -dy / max;
+}
+stick.addEventListener('pointerdown', (e) => { stickId = e.pointerId; stick.setPointerCapture(e.pointerId); stickMove(e); });
+stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickId) stickMove(e); });
+const stickEnd = (e) => { if (e.pointerId !== stickId) return; stickId = null; joy.fwd = 0; joy.str = 0; stick.firstElementChild.style.transform = ''; };
+stick.addEventListener('pointerup', stickEnd);
+stick.addEventListener('pointercancel', stickEnd);
+
+/* ---------- plans ---------- */
+let plansState = { list: [], i: 0 };
+async function setupPlans(sel) {
+  const list = [];
+  sel.floor.forEach((f, i) => list.push({ label: `Floor plan ${i + 1}`, file: f }));
+  sel.ceil.forEach((f, i) => list.push({ label: `Ceiling plan ${i + 1}`, file: f }));
+  plansState = { list, i: 0 };
+  $('#bPlans').hidden = !list.length;
+}
+function showPlan(i) {
+  plansState.i = i;
+  const bar = $('#plansBar'); bar.innerHTML = '';
+  plansState.list.forEach((p, k) => {
+    const b = document.createElement('button');
+    b.textContent = p.label; b.setAttribute('aria-pressed', k === i);
+    b.onclick = () => showPlan(k);
+    bar.append(b);
+  });
+  const sp = document.createElement('span'); sp.className = 'spacer';
+  const close = document.createElement('button'); close.textContent = 'Close'; close.onclick = () => { $('#plans').hidden = true; };
+  bar.append(sp, close);
+  $('#plansImg').src = objectUrlFor(plansState.list[i].file);
+  $('#plansView').classList.remove('zoom');
+}
+$('#bPlans').onclick = () => { $('#plans').hidden = false; showPlan(plansState.i); };
+$('#plansImg').onclick = () => $('#plansView').classList.toggle('zoom');
+$('#plans').addEventListener('click', (e) => { if (e.target === $('#plans')) $('#plans').hidden = true; });
+
+/* ---------- point cloud (optional, streamed and thinned) ---------- */
+async function loadCloud(file, maxPts) {
+  setStage('Reading point cloud', 0);
+  $('#cancelCloud').hidden = false;
+  S.cloudAbort = false;
+  const reader = file.stream().getReader();
+  const dec = new TextDecoder();
+  const pos = new Float32Array(maxPts * 3);
+  const col = new Float32Array(maxPts * 3);
+  let n = 0, stride = 1, line = 0, carry = '', read = 0, first = true, maxCol = 0;
+  while (true) {
+    if (S.cloudAbort) { reader.cancel(); throw new Error('cancelled'); }
+    const { done, value } = await reader.read();
+    if (done) break;
+    read += value.length;
+    const text = carry + dec.decode(value, { stream: true });
+    if (first) {
+      first = false;
+      let nl = 0; for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) nl++;
+      const avg = nl ? text.length / nl : 40;
+      stride = Math.max(1, Math.ceil((file.size / avg / maxPts) * 1.05));
+    }
+    let start = 0, idx;
+    while ((idx = text.indexOf('\n', start)) !== -1) {
+      if (line % stride === 0 && n < maxPts) {
+        const p = text.slice(start, idx).trim().split(/\s+/);
+        if (p.length >= 6) {
+          const x = +p[0], y = +p[1], z = +p[2];
+          if (x === x && y === y && z === z) {
+            const k = n * 3;
+            pos[k] = x; pos[k + 1] = y; pos[k + 2] = z;
+            const r = +p[3], g = +p[4], b = +p[5];
+            col[k] = r; col[k + 1] = g; col[k + 2] = b;
+            if (r > maxCol) maxCol = r; if (g > maxCol) maxCol = g; if (b > maxCol) maxCol = b;
+            n++;
+          }
+        }
+      }
+      line++; start = idx + 1;
+    }
+    carry = text.slice(start);
+    setStage(`Reading point cloud (${Math.round((read / file.size) * 100)}%, ${(n / 1e6).toFixed(1)} million points kept)`, read / file.size);
+  }
+  const scale = maxCol <= 1.0001 ? 255 : 1;
+  const c8 = new Uint8Array(n * 3);
+  for (let i = 0; i < n * 3; i++) c8[i] = Math.max(0, Math.min(255, Math.round(col[i] * scale)));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos.slice(0, n * 3), 3));
+  g.setAttribute('color', new THREE.BufferAttribute(c8, 3, true));
+  const pts = new THREE.Points(g, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true }));
+  return pts;
+}
+$('#loadCloud').onclick = async () => {
+  if (!S.sel || !S.sel.cloud) return;
+  $('#loadCloud').disabled = true;
+  try {
+    const pts = await loadCloud(S.sel.cloud, parseInt($('#cloudBudget').value, 10));
+    if (S.cloud) { S.root.remove(S.cloud); S.cloud.geometry.dispose(); }
+    S.cloud = pts; S.root.add(pts);
+    $('#showCloudRow').hidden = false; $('#showCloud').checked = true;
+  } catch (err) {
+    if (err.message !== 'cancelled') showNotice('The point cloud could not be read. ' + err.message);
+  } finally {
+    $('#progress').hidden = true; $('#cancelCloud').hidden = true; $('#loadCloud').disabled = false;
+  }
+};
+$('#cancelCloud').onclick = () => { S.cloudAbort = true; };
+$('#showCloud').onchange = (e) => { if (S.cloud) S.cloud.visible = e.target.checked; };
+
+/* ---------- save image, new ---------- */
+$('#bSave').onclick = () => {
+  renderer.render(scene, camera);
+  canvas.toBlob((b) => {
+    const a = document.createElement('a');
+    const d = new Date(), p = (v) => String(v).padStart(2, '0');
+    a.download = `space-view-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
+    a.href = URL.createObjectURL(b); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+};
+$('#bNew').onclick = () => { if (confirm('Close this space and open another?')) location.reload(); };
+
+/* ---------- main loop ---------- */
+let last = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (S.root) {
+    if (S.mode === 'walk') {
+      const kf = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+      const ks = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+      walk.yaw += ((keys.has('ArrowLeft') ? 1 : 0) - (keys.has('ArrowRight') ? 1 : 0)) * 1.6 * dt;
+      let f = kf + joy.fwd, s = ks + joy.str;
+      const m = Math.hypot(f, s); if (m > 1) { f /= m; s /= m; }
+      const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 3.2 : 1.6;
+      const sn = Math.sin(walk.yaw), cs = Math.cos(walk.yaw);
+      stepWalker(S.meshes, walk, (-sn * f + cs * s) * speed, (-cs * f - sn * s) * speed, dt, S.hasBVH);
+      camera.position.set(walk.x, walk.y + EYE, walk.z);
+      camera.rotation.set(walk.pitch, walk.yaw, 0, 'YXZ');
+    } else {
+      controls.update();
+    }
+    updateOverlays();
+  }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
