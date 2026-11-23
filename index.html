@@ -155,10 +155,11 @@
   <div id="manifest" hidden>
     <ul id="manifestList"></ul>
     <div class="opt">
-      <label for="texSize">Texture size</label>
+      <label for="texSize">Texture quality</label>
       <select id="texSize">
-        <option value="0">Full resolution</option>
-        <option value="1024">Reduced (1024 px), for tablets</option>
+        <option value="auto" selected>Automatic (recommended)</option>
+        <option value="low">Low memory</option>
+        <option value="high">High detail, strong GPU only</option>
       </select>
     </div>
     <div class="opt">
@@ -219,6 +220,10 @@
       <option value="strong">Strong</option>
     </select>
     <p class="sub" id="cleanStat">Removes small floating fragments and thin streaks. It cannot fill holes or fix stretched textures.</p>
+  </div>
+  <div class="field">
+    <div class="lbl">Textures</div>
+    <p class="sub" id="texStat"></p>
   </div>
   <div class="field" id="cloudField" hidden>
     <div class="lbl">Point cloud</div>
@@ -293,7 +298,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -587,24 +591,84 @@ const objectUrlFor = (file) => {
   if (!urlCache.has(k)) urlCache.set(k, URL.createObjectURL(file));
   return urlCache.get(k);
 };
-function downscale(tex, max) {
-  const img = tex.image;
-  if (!img || !img.width) return;
-  const big = Math.max(img.width, img.height);
-  if (big <= max) return;
-  const s = max / big;
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(img.width * s));
-  c.height = Math.max(1, Math.round(img.height * s));
-  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-  tex.image = c;
-  tex.needsUpdate = true;
+/* ---------- textures: one memory budget for the whole set, sharp versions streamed in near the camera ---------- */
+// <texture-logic>
+function parseMtl(text) {
+  const defs = [];
+  let cur = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^newmtl\s/i.test(line)) { cur = { name: line.slice(6).trim(), map: null }; defs.push(cur); }
+    else if (cur && /^map_Kd\s/i.test(line)) cur.map = line.split(/\s+/).pop();
+  }
+  return defs;
+}
+// Largest square size for which `count` textures (RGBA plus mipmaps) fit in the budget.
+function pickLowSize(count, budgetBytes) {
+  for (const s of [2048, 1024, 512, 256]) if (count * s * s * 4 * 1.34 <= budgetBytes) return s;
+  return 128;
+}
+// </texture-logic>
+const MAX_ANISO = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+async function decodeToCanvas(file, maxSize) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const k = Math.min(1, maxSize / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * k));
+    c.height = Math.max(1, Math.round(img.naturalHeight * k));
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return c;
+  } finally { URL.revokeObjectURL(url); }
+}
+function makeTexture(canvasEl) {
+  const t = new THREE.CanvasTexture(canvasEl);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = MAX_ANISO;
+  return t;
+}
+async function runPool(items, limit, fn) {
+  let i = 0;
+  const worker = async () => { while (i < items.length) { const k = i++; await fn(items[k], k); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+const LOD = { entries: [], hiSize: 0, k: 0, maxDist: 15, last: 0, busy: 0 };
+async function loadHi(e) {
+  if (LOD.busy >= 2 || e.loading) return;
+  LOD.busy++; e.loading = true;
+  try {
+    const t = makeTexture(await decodeToCanvas(e.file, LOD.hiSize));
+    if (e.want) { e.hi = t; e.mat.map = t; } else t.dispose();
+  } catch (err) { console.warn('high-resolution texture failed', err); }
+  finally { LOD.busy--; e.loading = false; }
+}
+function updateLOD(now) {
+  if (!LOD.hiSize || S.mode === 'pano' || now - LOD.last < 400) return;
+  LOD.last = now;
+  const cam = camera.position;
+  const scored = LOD.entries.map((e) => {
+    let d = Infinity;
+    for (const s of e.spheres) d = Math.min(d, Math.max(0, cam.distanceTo(s.c) - s.r));
+    return [d, e];
+  }).sort((a, b) => a[0] - b[0]);
+  const want = new Set(scored.filter(([d]) => d < LOD.maxDist).slice(0, LOD.k).map(([, e]) => e));
+  for (const e of LOD.entries) {
+    e.want = want.has(e);
+    if (e.want) { if (!e.hi) loadHi(e); }
+    else if (e.hi) { e.mat.map = e.low; e.hi.dispose(); e.hi = null; }
+  }
 }
 
 async function openSpace() {
   const sel = S.sel;
   $('#start').hidden = true;
-  const texMax = parseInt($('#texSize').value, 10) || 0;
+  const quality = $('#texSize').value;
   try {
     setStage('Reading materials', 0.03);
     await tick();
@@ -614,56 +678,70 @@ async function openSpace() {
     const objText = await sel.obj.text();
 
     const missing = new Set();
-    const manager = new THREE.LoadingManager();
-    manager.setURLModifier((url) => {
-      let base = url.split('/').pop().split('\\').pop();
-      try { base = decodeURIComponent(base); } catch (_) { /* keep raw */ }
-      const f = sel.byName.get(base.toLowerCase());
-      if (!f) { missing.add(base); return 'data:image/gif;base64,R0lGODlhAQABAAAAACw='; }
-      return objectUrlFor(f);
+    const defs = parseMtl(mtlText);
+    const withMap = defs.filter((d) => d.map);
+    const budget = (coarse ? 200e6 : 450e6) * (quality === 'low' ? 0.5 : quality === 'high' ? 3.2 : 1);
+    const lowSize = pickLowSize(withMap.length, budget);
+    const matByName = new Map();
+    for (const d of defs) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x9aa0a6, side: THREE.DoubleSide });
+      mat.name = d.name;
+      mat.userData.lod = { mat, file: null, low: null, hi: null, loading: false, want: false, spheres: [] };
+      matByName.set(d.name, mat);
+    }
+    let done = 0;
+    await runPool(withMap, 4, async (d) => {
+      const base = d.map.split(/[\\/]/).pop();
+      let f = sel.byName.get(base.toLowerCase());
+      if (!f) { try { f = sel.byName.get(decodeURIComponent(base).toLowerCase()); } catch (_) { /* keep missing */ } }
+      const mat = matByName.get(d.name);
+      if (!f) missing.add(base);
+      else {
+        try {
+          const t = makeTexture(await decodeToCanvas(f, lowSize));
+          mat.map = t; mat.color.set(0xffffff); mat.needsUpdate = true;
+          Object.assign(mat.userData.lod, { file: f, low: t });
+        } catch (err) { console.warn('texture failed', base, err); missing.add(base); }
+      }
+      done++;
+      setStage(`Loading textures (${done} of ${withMap.length})`, 0.1 + 0.45 * (done / withMap.length));
     });
-    manager.onProgress = (_u, loaded, total) => setStage(`Loading textures (${loaded} of ${total})`, 0.12 + 0.38 * (loaded / total));
 
-    const creator = new MTLLoader(manager).parse(mtlText, '');
-    const texLines = (mtlText.match(/^\s*map_Kd\s/gim) || []).length;
-    const texturesDone = texLines ? new Promise((res) => { manager.onLoad = res; }) : Promise.resolve();
-    creator.preload();
-    await texturesDone;
-
-    setStage('Building the mesh. Large files take a few seconds.', 0.55);
+    setStage('Building the mesh. Large files take a few seconds.', 0.58);
     await tick();
-    const loader = new OBJLoader();
-    loader.setMaterials(creator);
-    const root = loader.parse(objText);
+    const root = new OBJLoader().parse(objText);
 
     setStage('Preparing materials', 0.75);
     await tick();
-    const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    const cache = new Map();
-    const toBasic = (old) => {
-      if (cache.has(old)) return cache.get(old);
-      const map = old.map || null;
-      if (map) {
-        map.colorSpace = THREE.SRGBColorSpace;
-        map.anisotropy = maxAniso;
-        if (texMax) downscale(map, texMax);
-      }
-      const m = new THREE.MeshBasicMaterial({ map, color: map ? 0xffffff : (old.color || 0x999999), side: THREE.DoubleSide });
-      cache.set(old, m);
-      return m;
-    };
+    const fallback = new THREE.MeshBasicMaterial({ color: 0x9aa0a6, side: THREE.DoubleSide });
+    const used = new Set();
+    const resolve = (old) => { const m = matByName.get(old && old.name) || fallback; used.add(m); return m; };
     const meshes = [];
     root.traverse((o) => {
       if (!o.isMesh) return;
-      o.material = Array.isArray(o.material) ? o.material.map(toBasic) : toBasic(o.material);
+      o.material = Array.isArray(o.material) ? o.material.map(resolve) : resolve(o.material);
       meshes.push(o);
     });
     if (!meshes.length) throw new Error('The .obj file did not contain any mesh geometry.');
-    S.materials = [...cache.values()];
+    S.materials = [...used];
 
     // MatterPak is right-handed, Z up, 1 unit = 1 metre. three.js is Y up.
     root.rotation.x = -Math.PI / 2;
     root.updateMatrixWorld(true);
+
+    // Sharp textures are streamed in for the meshes nearest the camera (see updateLOD).
+    for (const m of meshes) {
+      m.geometry.computeBoundingSphere();
+      const bs = m.geometry.boundingSphere, c = bs.center.clone().applyMatrix4(m.matrixWorld);
+      for (const mt of (Array.isArray(m.material) ? m.material : [m.material])) if (mt.userData.lod) mt.userData.lod.spheres.push({ c, r: bs.radius });
+    }
+    const hiSize = coarse ? 1024 : 2048;
+    LOD.entries = S.materials.map((mt) => mt.userData.lod).filter((e) => e && e.file);
+    LOD.hiSize = hiSize > lowSize ? hiSize : 0;
+    LOD.k = Math.max(2, Math.round((coarse ? 6 : 14) * (quality === 'high' ? 1.5 : quality === 'low' ? 0.5 : 1)));
+    $('#texStat').textContent = LOD.hiSize
+      ? `${withMap.length} textures at ${lowSize} px overall to stay within memory. The ${LOD.k} nearest to the camera sharpen to ${LOD.hiSize} px.`
+      : `${withMap.length} textures at ${lowSize} px.`;
 
     S.meshes = meshes;
     S.cleanLevel = $('#cleanStart').value;
@@ -1449,6 +1527,7 @@ function frame(now) {
       controls.update();
     }
     updateOverlays();
+    updateLOD(now);
   }
   renderer.render(scene, camera);
 }
