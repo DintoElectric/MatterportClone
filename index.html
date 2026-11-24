@@ -171,6 +171,16 @@
         <option value="off">Off</option>
       </select>
     </div>
+    <div class="opt" id="cloudStartRow" hidden>
+      <label for="cloudStart">Point cloud<small>The densest view of the space. Loads in the background.</small></label>
+      <select id="cloudStart">
+        <option value="auto" selected>Automatic (recommended)</option>
+        <option value="all">All points (about 1 GB of graphics memory)</option>
+        <option value="20000000">20 million points</option>
+        <option value="6000000">6 million points</option>
+        <option value="none">Do not load</option>
+      </select>
+    </div>
     <div class="opt">
       <label>Panorama photos (optional)<small id="panoCount">None added. You can add them later.</small></label>
       <button id="pickPanos" class="ghost">Add photos</button>
@@ -230,15 +240,22 @@
   <div class="field" id="cloudField" hidden>
     <div class="lbl">Point cloud</div>
     <div class="row">
-      <select id="cloudBudget" aria-label="Point budget">
-        <option value="1000000">1 million points</option>
-        <option value="3000000" selected>3 million points</option>
+      <select id="cloudBudget" aria-label="Number of points">
+        <option value="3000000">3 million points</option>
         <option value="6000000">6 million points</option>
+        <option value="12000000">12 million points</option>
+        <option value="20000000">20 million points</option>
+        <option value="all">All points</option>
       </select>
       <button id="loadCloud">Load</button>
     </div>
     <label class="check" id="showCloudRow" hidden><input type="checkbox" id="showCloud" checked> Show points</label>
-    <p class="sub">The full cloud is too large for a browser, so it is thinned evenly while loading.</p>
+    <label class="check"><input type="checkbox" id="edlOn" checked> Depth shading</label>
+    <div id="ptSizeRow" hidden>
+      <label for="ptSize" style="display:flex;justify-content:space-between;font-weight:500">Point size <output id="ptSizeOut">1.0x</output></label>
+      <input type="range" id="ptSize" min="0.5" max="2.5" step="0.1" value="1">
+    </div>
+    <p class="sub" id="cloudStat">Points load in blocks and thin out with distance, so only what you can see is drawn at full density.</p>
   </div>
 </aside>
 
@@ -548,6 +565,7 @@ function showManifest(sel) {
   row('Ceiling plans', sel.ceil.length ? `${sel.ceil.length} found` : 'None', sel.ceil.length ? 'ok' : 'note');
   row('Point cloud (optional)', sel.cloud ? fmtMB(sel.cloud.size) : 'Not included', sel.cloud ? 'ok' : 'note');
   $('#manifest').hidden = false;
+  $('#cloudStartRow').hidden = !sel.cloud;
   $('#drop').hidden = true;
   $('#openBtn').disabled = !(sel.obj && sel.mtl && sel.textures.length);
   const err = $('#startError');
@@ -799,6 +817,8 @@ async function openSpace() {
     goDollhouse(true);
     applyCut();
     updateCleanStat();
+    const cs = $('#cloudStart').value;
+    if (sel.cloud && cs !== 'none') await runCloudLoad(cs === 'auto' ? autoCloudBudget() : cloudBudgetValue(cs));
     if (S.pending.length) {
       addPanoFiles(S.pending);
       const first = S.panos.find((q) => q.placed);
@@ -924,7 +944,6 @@ $('#showMesh').onchange = (e) => { S.meshOn = e.target.checked; if (S.root) S.me
 const pickRay = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 function pick(cx, cy, wantFloor) {
-  if (!S.meshOn) return null;
   const r = canvas.getBoundingClientRect();
   ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
   pickRay.setFromCamera(ndc, camera);
@@ -1139,74 +1158,274 @@ $('#bPlans').onclick = () => { $('#plans').hidden = false; showPlan(plansState.i
 $('#plansImg').onclick = () => $('#plansView').classList.toggle('zoom');
 $('#plans').addEventListener('click', (e) => { if (e.target === $('#plans')) $('#plans').hidden = true; });
 
-/* ---------- point cloud (optional, streamed and thinned) ---------- */
-async function loadCloud(file, maxPts) {
-  setStage('Reading point cloud', 0);
-  $('#cancelCloud').hidden = false;
-  S.cloudAbort = false;
-  const reader = file.stream().getReader();
-  const dec = new TextDecoder();
-  const pos = new Float32Array(maxPts * 3);
-  const col = new Float32Array(maxPts * 3);
-  let n = 0, stride = 1, line = 0, carry = '', read = 0, first = true, maxCol = 0;
-  while (true) {
-    if (S.cloudAbort) { reader.cancel(); throw new Error('cancelled'); }
-    const { done, value } = await reader.read();
-    if (done) break;
-    read += value.length;
-    const text = carry + dec.decode(value, { stream: true });
-    if (first) {
-      first = false;
-      let nl = 0; for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) nl++;
-      const avg = nl ? text.length / nl : 40;
-      stride = Math.max(1, Math.ceil((file.size / avg / maxPts) * 1.05));
-    }
-    let start = 0, idx;
-    while ((idx = text.indexOf('\n', start)) !== -1) {
-      if (line % stride === 0 && n < maxPts) {
-        const p = text.slice(start, idx).trim().split(/\s+/);
-        if (p.length >= 6) {
-          const x = +p[0], y = +p[1], z = +p[2];
-          if (x === x && y === y && z === z) {
-            const k = n * 3;
-            pos[k] = x; pos[k + 1] = y; pos[k + 2] = z;
-            const r = +p[3], g = +p[4], b = +p[5];
-            col[k] = r; col[k + 1] = g; col[k + 2] = b;
-            if (r > maxCol) maxCol = r; if (g > maxCol) maxCol = g; if (b > maxCol) maxCol = b;
-            n++;
-          }
-        }
+/* ---------- point cloud: every point, in blocks, with level of detail ---------- */
+// Runs in a Web Worker. Reads cloud.xyz as bytes, sorts points into 4 m blocks, shuffles each block
+// (so any prefix of it is an even sample) and estimates the surface spacing of each block.
+function cloudWorkerMain() {
+  const CELL = 4;
+  self.onmessage = (e) => { run(e.data.file, e.data.budget).catch((err) => self.postMessage({ type: 'error', message: String((err && err.message) || err) })); };
+  const v = new Float64Array(6), fl = new Uint8Array(6);
+  function parseLine(buf, s, e) {
+    let i = s;
+    for (let k = 0; k < 6; k++) {
+      let c;
+      while (i < e && ((c = buf[i]) === 32 || c === 9 || c === 13 || c === 44)) i++;
+      if (i >= e) return false;
+      let neg = false;
+      if (buf[i] === 45) { neg = true; i++; } else if (buf[i] === 43) i++;
+      let val = 0, any = false, dot = 0;
+      while (i < e && (c = buf[i]) >= 48 && c <= 57) { val = val * 10 + (c - 48); i++; any = true; }
+      if (i < e && buf[i] === 46) {
+        dot = 1; i++;
+        let sc = 0.1;
+        while (i < e && (c = buf[i]) >= 48 && c <= 57) { val += (c - 48) * sc; sc *= 0.1; i++; any = true; }
       }
-      line++; start = idx + 1;
+      if (!any) return false;
+      if (i < e && (buf[i] === 101 || buf[i] === 69)) {
+        i++;
+        let en = false;
+        if (buf[i] === 45) { en = true; i++; } else if (buf[i] === 43) i++;
+        let ex = 0;
+        while (i < e && (c = buf[i]) >= 48 && c <= 57) { ex = ex * 10 + (c - 48); i++; }
+        val *= Math.pow(10, en ? -ex : ex);
+      }
+      v[k] = neg ? -val : val; fl[k] = dot;
     }
-    carry = text.slice(start);
-    setStage(`Reading point cloud (${Math.round((read / file.size) * 100)}%, ${(n / 1e6).toFixed(1)} million points kept)`, read / file.size);
+    return true;
   }
-  const scale = maxCol <= 1.0001 ? 255 : 1;
-  const c8 = new Uint8Array(n * 3);
-  for (let i = 0; i < n * 3; i++) c8[i] = Math.max(0, Math.min(255, Math.round(col[i] * scale)));
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos.slice(0, n * 3), 3));
-  g.setAttribute('color', new THREE.BufferAttribute(c8, 3, true));
-  const pts = new THREE.Points(g, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true }));
-  return pts;
+  async function run(file, budget) {
+    const reader = file.stream().getReader();
+    const chunks = new Map();
+    let carry = null, line = 0, kept = 0, read = 0, stride = 1, first = true, lastKey = -1, last = null, lastReport = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      let buf = value;
+      if (carry && carry.length) { buf = new Uint8Array(carry.length + value.length); buf.set(carry, 0); buf.set(value, carry.length); }
+      if (first) {
+        first = false;
+        let nl = 0;
+        for (let i = 0; i < buf.length; i++) if (buf[i] === 10) nl++;
+        const avg = nl ? buf.length / nl : 40;
+        const est = file.size / avg;
+        stride = budget && isFinite(budget) ? Math.max(1, Math.ceil((est / budget) * 1.03)) : 1;
+      }
+      let s = 0;
+      const end = buf.length;
+      for (let i = 0; i < end; i++) {
+        if (buf[i] !== 10) continue;
+        if (line % stride === 0 && parseLine(buf, s, i)) {
+          const x = v[0], y = v[1], z = v[2];
+          const key = (Math.floor(x / CELL) + 512) + 1024 * ((Math.floor(y / CELL) + 512) + 1024 * (Math.floor(z / CELL) + 512));
+          let c = key === lastKey ? last : chunks.get(key);
+          if (!c) {
+            c = { n: 0, cap: 2048, pos: new Float32Array(2048 * 3), col: new Uint8Array(2048 * 3), mn: [Infinity, Infinity, Infinity], mx: [-Infinity, -Infinity, -Infinity] };
+            chunks.set(key, c);
+          }
+          lastKey = key; last = c;
+          if (c.n === c.cap) {
+            const np = new Float32Array(c.cap * 6); np.set(c.pos); c.pos = np;
+            const nc = new Uint8Array(c.cap * 6); nc.set(c.col); c.col = nc;
+            c.cap *= 2;
+          }
+          const j = c.n * 3;
+          c.pos[j] = x; c.pos[j + 1] = y; c.pos[j + 2] = z;
+          for (let q = 0; q < 3; q++) {
+            let r = v[3 + q];
+            if (fl[3 + q] && r <= 1) r *= 255;
+            c.col[j + q] = r < 0 ? 0 : r > 255 ? 255 : r + 0.5;
+            const p = v[q];
+            if (p < c.mn[q]) c.mn[q] = p;
+            if (p > c.mx[q]) c.mx[q] = p;
+          }
+          c.n++; kept++;
+        }
+        line++; s = i + 1;
+      }
+      carry = buf.subarray(s);
+      if (read - lastReport > 64e6) { lastReport = read; self.postMessage({ type: 'progress', read, size: file.size, kept }); }
+    }
+    self.postMessage({ type: 'progress', read: file.size, size: file.size, kept });
+    const keys = [...chunks.keys()].sort((a, b) => a - b);
+    const counts = new Uint16Array(64 * 64 * 64), counts2 = new Uint32Array(64 * 64 * 64), tmp = new Uint32Array(64 * 64 * 64);
+    let doneN = 0;
+    for (const key of keys) {
+      const c = chunks.get(key), n = c.n, pos = c.pos, col = c.col;
+      for (let i = n - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        if (j === i) continue;
+        const a = i * 3, b = j * 3;
+        let t = pos[a]; pos[a] = pos[b]; pos[b] = t;
+        t = pos[a + 1]; pos[a + 1] = pos[b + 1]; pos[b + 1] = t;
+        t = pos[a + 2]; pos[a + 2] = pos[b + 2]; pos[b + 2] = t;
+        let u = col[a]; col[a] = col[b]; col[b] = u;
+        u = col[a + 1]; col[a + 1] = col[b + 1]; col[b + 1] = u;
+        u = col[a + 2]; col[a + 2] = col[b + 2]; col[b + 2] = u;
+      }
+      // Local spacing of each point from the number of points in its 10 cm voxel (a surface patch is about 0.0115 m2).
+      counts.fill(0);
+      const vox = new Int32Array(n);
+      for (let i = 0; i < n; i++) {
+        const ix = Math.min(63, ((pos[3 * i] - c.mn[0]) * 10) | 0), iy = Math.min(63, ((pos[3 * i + 1] - c.mn[1]) * 10) | 0), iz = Math.min(63, ((pos[3 * i + 2] - c.mn[2]) * 10) | 0);
+        const k = ix + 64 * (iy + 64 * iz);
+        vox[i] = k;
+        if (counts[k] < 65535) counts[k]++;
+      }
+      counts2.set(counts);
+      // sum over the 3x3x3 neighbourhood with three separable passes
+      for (let axis = 0; axis < 3; axis++) {
+        const st = axis === 0 ? 1 : axis === 1 ? 64 : 4096;
+        for (let k = 0; k < 262144; k++) {
+          const c0 = (k / st | 0) % 64;
+          tmp[k] = counts2[k] + (c0 > 0 ? counts2[k - st] : 0) + (c0 < 63 ? counts2[k + st] : 0);
+        }
+        counts2.set(tmp);
+      }
+      const SP = new Uint8Array(n), LN = Math.log(12.5);
+      let sum = 0;
+      const m = Math.min(n, 60000);
+      for (let i = 0; i < n; i++) {
+        const sp = Math.min(0.05, Math.max(0.004, Math.sqrt(0.105 / counts2[vox[i]])));
+        SP[i] = Math.round((Math.log(sp / 0.004) / LN) * 255);
+        if (i < m) sum += sp;
+      }
+      const spacing = Math.min(0.05, Math.max(0.004, sum / m));
+      const P = pos.slice(0, n * 3), C = col.slice(0, n * 3);
+      c.pos = null; c.col = null;
+      self.postMessage({ type: 'chunk', n, pos: P, col: C, sp: SP, mn: c.mn, mx: c.mx, spacing }, [P.buffer, C.buffer, SP.buffer]);
+      if (++doneN % 25 === 0) self.postMessage({ type: 'prep', done: doneN, total: keys.length });
+    }
+    self.postMessage({ type: 'done', total: kept, blocks: keys.length });
+  }
 }
-$('#loadCloud').onclick = async () => {
+
+const CLOUD = { group: null, chunks: [], worker: null, sizeMul: 1, cap: 0, total: 0,
+  uFocal: { value: 600 }, uSize: { value: 2.2 }, uMaxPx: { value: 40 } };
+const POINT_VS = `
+uniform float uFocal; uniform float uLod; uniform float uSize; uniform float uMaxPx;
+attribute float aSp;
+varying vec3 vColor;
+#include <clipping_planes_pars_vertex>
+void main() {
+  vColor = color;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  float sp = 0.004 * pow(12.5, aSp);
+  float depth = max(-mvPosition.z, 0.05);
+  gl_PointSize = clamp(sp * uLod * uSize * uFocal / depth, 1.0, uMaxPx);
+  #include <clipping_planes_vertex>
+}`;
+const POINT_FS = `
+varying vec3 vColor;
+#include <clipping_planes_pars_fragment>
+void main() {
+  #include <clipping_planes_fragment>
+  vec2 c = gl_PointCoord - vec2(0.5);
+  if (dot(c, c) > 0.25) discard;
+  gl_FragColor = vec4(pow(vColor, vec3(2.2)), 1.0);
+  #include <colorspace_fragment>
+}`;
+function clearCloud() {
+  if (CLOUD.group && S.root) S.root.remove(CLOUD.group);
+  for (const c of CLOUD.chunks) { c.points.geometry.dispose(); c.points.material.dispose(); }
+  CLOUD.chunks = []; CLOUD.group = null;
+}
+function addCloudChunk(group, m) {
+  const g = new THREE.BufferGeometry();
+  const pa = new THREE.BufferAttribute(m.pos, 3), ca = new THREE.BufferAttribute(m.col, 3, true);
+  const sa = new THREE.BufferAttribute(m.sp, 1, true);
+  pa.onUpload(() => { pa.array = null; });      // free the CPU copy once it is on the GPU
+  ca.onUpload(() => { ca.array = null; });
+  sa.onUpload(() => { sa.array = null; });
+  g.setAttribute('position', pa); g.setAttribute('color', ca); g.setAttribute('aSp', sa);
+  g.boundingBox = new THREE.Box3(new THREE.Vector3(...m.mn), new THREE.Vector3(...m.mx));
+  g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uFocal: CLOUD.uFocal, uSize: CLOUD.uSize, uMaxPx: CLOUD.uMaxPx, uLod: { value: 1 } },
+    vertexShader: POINT_VS, fragmentShader: POINT_FS, vertexColors: true, clipping: true,
+  });
+  const pts = new THREE.Points(g, mat);
+  group.add(pts);
+  CLOUD.chunks.push({ points: pts, box: g.boundingBox, n: m.n, spacing: m.spacing, f: 1, lastCount: -1 });
+}
+function loadCloudChunks(file, budget) {
+  return new Promise((resolve, reject) => {
+    if (CLOUD.worker) { CLOUD.worker.terminate(); CLOUD.worker = null; }
+    clearCloud();
+    const url = URL.createObjectURL(new Blob(['(' + cloudWorkerMain.toString() + ')()'], { type: 'text/javascript' }));
+    const w = new Worker(url);
+    CLOUD.worker = w;
+    const group = new THREE.Group();
+    group.visible = false;
+    S.root.add(group);
+    setStage('Reading point cloud', 0);
+    $('#cancelCloud').hidden = false;
+    $('#cancelCloud').onclick = () => { w.terminate(); CLOUD.worker = null; clearCloud(); URL.revokeObjectURL(url); reject(new Error('cancelled')); };
+    w.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === 'progress') setStage(`Reading point cloud (${Math.round((100 * m.read) / m.size)}%, ${(m.kept / 1e6).toFixed(1)} million points kept)`, 0.85 * (m.read / m.size));
+      else if (m.type === 'prep') setStage(`Organising points (${m.done} of ${m.total} blocks)`, 0.85 + 0.15 * (m.done / m.total));
+      else if (m.type === 'chunk') addCloudChunk(group, m);
+      else if (m.type === 'done') {
+        CLOUD.group = group; CLOUD.total = m.total;
+        group.visible = true;
+        w.terminate(); CLOUD.worker = null; URL.revokeObjectURL(url);
+        resolve(m);
+      } else if (m.type === 'error') { w.terminate(); CLOUD.worker = null; clearCloud(); URL.revokeObjectURL(url); reject(new Error(m.message)); }
+    };
+    w.onerror = (ev) => { clearCloud(); reject(new Error(ev.message || 'The point cloud worker failed.')); };
+    w.postMessage({ file, budget });
+  });
+}
+
+// Each frame: decide how many points of each block to draw, and how big to draw them.
+const _cl = new THREE.Vector3();
+function updateCloudLOD() {
+  if (!CLOUD.group || !CLOUD.group.visible || !S.root) return;
+  const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const focal = renderer.domElement.height / 2 / tanHalf;           // pixels per metre at 1 m
+  const cam = S.root.worldToLocal(_cl.copy(camera.position));
+  CLOUD.uFocal.value = focal; CLOUD.uSize.value = 2.2 * CLOUD.sizeMul;
+  const T = 1.5;                                                       // target spacing between drawn points, in pixels
+  let total = 0;
+  for (const c of CLOUD.chunks) {
+    const d = Math.max(0.25, c.box.distanceToPoint(cam));
+    const px = (c.spacing * focal) / d;
+    c.f = Math.min(1, (px / T) * (px / T));
+    total += Math.max(Math.min(c.n, 200), c.n * c.f);
+  }
+  const k = total > CLOUD.cap ? CLOUD.cap / total : 1;
+  for (const c of CLOUD.chunks) {
+    const f = Math.max(c.f * k, Math.min(1, 200 / c.n));
+    const count = Math.min(c.n, Math.ceil(c.n * f));
+    if (count !== c.lastCount) { c.points.geometry.setDrawRange(0, count); c.lastCount = count; }
+    c.points.material.uniforms.uLod.value = 1 / Math.sqrt(f);
+  }
+}
+
+function cloudBudgetValue(v) { return v === 'all' ? Infinity : parseInt(v, 10); }
+function autoCloudBudget() { return coarse ? 6e6 : ((navigator.deviceMemory || 8) >= 8 ? Infinity : 12e6); }
+async function runCloudLoad(budget) {
   if (!S.sel || !S.sel.cloud) return;
   $('#loadCloud').disabled = true;
+  CLOUD.cap = coarse ? 2.5e6 : 6e6;
   try {
-    const pts = await loadCloud(S.sel.cloud, parseInt($('#cloudBudget').value, 10));
-    if (S.cloud) { S.root.remove(S.cloud); S.cloud.geometry.dispose(); }
-    S.cloud = pts; S.root.add(pts);
-    $('#showCloudRow').hidden = false; $('#showCloud').checked = true;
+    const t0 = performance.now();
+    const res = await loadCloudChunks(S.sel.cloud, budget);
+    $('#showCloudRow').hidden = false; $('#showCloud').checked = true; $('#ptSizeRow').hidden = false;
+    S.meshOn = false; $('#showMesh').checked = false; S.meshes.forEach((m) => { m.visible = false; });   // points are the picture; the mesh still drives collision and measuring
+    $('#cloudStat').textContent = `${(res.total / 1e6).toFixed(1)} million points in ${res.blocks} blocks, loaded in ${Math.round((performance.now() - t0) / 1000)} s. At most ${(CLOUD.cap / 1e6).toFixed(1)} million are drawn at once, the nearest at full density.`;
   } catch (err) {
     if (err.message !== 'cancelled') showNotice('The point cloud could not be read. ' + err.message);
   } finally {
     $('#progress').hidden = true; $('#cancelCloud').hidden = true; $('#loadCloud').disabled = false;
   }
-};
-$('#cancelCloud').onclick = () => { S.cloudAbort = true; };
-$('#showCloud').onchange = (e) => { if (S.cloud) S.cloud.visible = e.target.checked; };
+}
+$('#loadCloud').onclick = () => runCloudLoad(cloudBudgetValue($('#cloudBudget').value));
+$('#showCloud').onchange = (e) => { if (CLOUD.group) CLOUD.group.visible = e.target.checked; };
+$('#ptSize').oninput = (e) => { CLOUD.sizeMul = +e.target.value; $('#ptSizeOut').textContent = CLOUD.sizeMul.toFixed(1) + 'x'; };
+$('#edlOn').onchange = (e) => { EDL.on = e.target.checked; };
 
 /* ---------- panoramas ---------- */
 const panoMat = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false });
@@ -1502,7 +1721,7 @@ $('#bPhoto').onclick = () => {
 
 /* ---------- save image, new ---------- */
 $('#bSave').onclick = () => {
-  renderer.render(scene, camera);
+  renderFrame();
   canvas.toBlob((b) => {
     const a = document.createElement('a');
     const d = new Date(), p = (v) => String(v).padStart(2, '0');
@@ -1512,6 +1731,63 @@ $('#bSave').onclick = () => {
   });
 };
 $('#bNew').onclick = () => { if (confirm('Close this space and open another?')) location.reload(); };
+
+/* ---------- depth shading (eye-dome lighting) for point clouds ---------- */
+const EDL = { on: true, rt: null, mat: null, scene: new THREE.Scene(), cam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), strength: 0.35, radius: 1.4 };
+function ensureEDL() {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  if (!EDL.rt || EDL.rt.width !== size.x || EDL.rt.height !== size.y) {
+    if (EDL.rt) { EDL.rt.depthTexture.dispose(); EDL.rt.dispose(); }
+    const rt = new THREE.WebGLRenderTarget(size.x, size.y, { depthBuffer: true, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    rt.depthTexture = new THREE.DepthTexture(size.x, size.y);
+    EDL.rt = rt;
+  }
+  if (!EDL.mat) {
+    EDL.mat = new THREE.ShaderMaterial({
+      uniforms: { tColor: { value: null }, tDepth: { value: null }, uTexel: { value: new THREE.Vector2() }, uNear: { value: 0.1 }, uFar: { value: 100 }, uStrength: { value: 0.5 }, uRadius: { value: 1.4 } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tColor; uniform sampler2D tDepth; uniform vec2 uTexel;
+        uniform float uNear; uniform float uFar; uniform float uStrength; uniform float uRadius;
+        varying vec2 vUv;
+        float logZ(float d) { return log2((uNear * uFar) / (uFar - (uFar - uNear) * d)); }
+        void main() {
+          vec4 col = texture2D(tColor, vUv);
+          float d0 = texture2D(tDepth, vUv).r;
+          if (d0 < 0.99999) {
+            float z0 = logZ(d0);
+            float sum = 0.0;
+            vec2 o[4]; o[0] = vec2(1.0, 0.0); o[1] = vec2(-1.0, 0.0); o[2] = vec2(0.0, 1.0); o[3] = vec2(0.0, -1.0);
+            for (int i = 0; i < 4; i++) {
+              float d = texture2D(tDepth, vUv + o[i] * uTexel * uRadius).r;
+              float z = d < 0.99999 ? logZ(d) : z0;
+              sum += max(0.0, z0 - z - 0.012);
+            }
+            col.rgb *= exp(-(sum / 4.0) * 300.0 * uStrength);
+          }
+          gl_FragColor = col;
+          #include <colorspace_fragment>
+        }`,
+      depthTest: false, depthWrite: false,
+    });
+    EDL.scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), EDL.mat));
+    EDL.scene.children[0].frustumCulled = false;
+  }
+}
+function renderFrame() {
+  if (EDL.on && CLOUD.group && CLOUD.group.visible && S.mode !== 'pano') {
+    ensureEDL();
+    renderer.setRenderTarget(EDL.rt);
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    const u = EDL.mat.uniforms;
+    u.tColor.value = EDL.rt.texture; u.tDepth.value = EDL.rt.depthTexture;
+    u.uTexel.value.set(1 / EDL.rt.width, 1 / EDL.rt.height);
+    u.uNear.value = camera.near; u.uFar.value = camera.far; u.uStrength.value = EDL.strength; u.uRadius.value = EDL.radius;
+    renderer.render(EDL.scene, EDL.cam);
+  } else renderer.render(scene, camera);
+}
 
 /* ---------- main loop ---------- */
 let last = performance.now();
@@ -1539,8 +1815,9 @@ function frame(now) {
     }
     updateOverlays();
     updateLOD(now);
+    updateCloudLOD();
   }
-  renderer.render(scene, camera);
+  renderFrame();
 }
 requestAnimationFrame(frame);
 </script>
