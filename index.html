@@ -119,6 +119,12 @@
   #hotspots { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
   .hot { position: absolute; width: 46px; height: 46px; margin: -23px 0 0 -23px; padding: 0; min-height: 0; border-radius: 50%; border: 3px solid #fff; background: rgba(13,92,145,.6); pointer-events: auto; }
   .hot:hover { background: rgba(13,92,145,.9); }
+  #layout { position: fixed; inset: 0; background: #e9edf0; touch-action: none; }
+  #layoutCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #layoutBar { position: fixed; left: 12px; top: calc(78px + env(safe-area-inset-top, 0px)); display: flex; gap: 8px; flex-wrap: wrap; max-width: calc(100vw - 340px); padding: 8px; background: rgba(245,246,247,.95); border: 1px solid var(--line); border-radius: 12px; }
+  #layoutBar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  #hotspots.aiming .hot { pointer-events: none; }
+  #photoStartRow { margin-top: 14px; display: flex; justify-content: center; }
   #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .15s; }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -139,6 +145,15 @@
 <div id="hotspots"></div>
 <div id="fade"></div>
 
+<div id="layout" hidden>
+  <canvas id="layoutCanvas" aria-label="Floor layout for placing photos"></canvas>
+  <div id="layoutBar">
+    <button id="lyPlan" class="ghost">Add floor plan</button>
+    <button id="lyScale" class="ghost" aria-pressed="false">Set scale</button>
+    <button id="lyFit" class="ghost">Fit to screen</button>
+  </div>
+</div>
+
 <header id="titlebar" hidden><strong>Dinto Space Viewer</strong><span id="extents"></span></header>
 
 <section id="start" class="card">
@@ -152,6 +167,7 @@
     </div>
     <small>If your browser has no folder picker (iPad, for example), use Choose files and select everything in the folder.</small>
   </div>
+  <div id="photoStartRow"><button id="photoStart" class="ghost">Or start a space from 360° photos, no scan needed</button></div>
   <div id="manifest" hidden>
     <ul id="manifestList"></ul>
     <div class="opt">
@@ -261,11 +277,11 @@
 
 <aside id="panoPanel" class="panel" hidden>
   <h2>Panoramas</h2>
-  <p class="sub">Add 360° photos, then place each one on the floor where it was taken. Tap a blue pin in the model, or a ring inside a photo, to move between them.</p>
+  <p class="sub" id="panoHelp">Add 360° photos, then place each one on the floor where it was taken. Tap a blue pin in the model, or a ring inside a photo, to move between them.</p>
   <div class="row" style="margin-top:12px"><button id="addPanos" class="primary">Add photos</button></div>
   <ul id="panoItems" class="plist"></ul>
   <div class="row"><button id="expPlace" class="ghost">Export placements</button><button id="impPlace" class="ghost">Import placements</button></div>
-  <p class="sub">Use JPEG files exported from Insta360 Studio. Raw INSP files are usually unstitched and can show up as two circles. Placements are remembered in this browser for this scan.</p>
+  <p class="sub" id="panoNote">Use JPEG files exported from Insta360 Studio. Raw INSP files are usually unstitched and can show up as two circles. Placements are remembered in this browser for this scan.</p>
 </aside>
 
 <aside id="alignPanel" class="panel" hidden>
@@ -279,9 +295,15 @@
     <label for="alLens">Lens height <output id="alLensOut"></output></label>
     <input type="range" id="alLens" min="0.8" max="2.4" step="0.01" value="1.5">
   </div>
-  <div class="field">
+  <div class="field" id="alOverField">
     <label for="alOver">Mesh overlay <output id="alOverOut">0%</output></label>
     <input type="range" id="alOver" min="0" max="100" step="1" value="0">
+  </div>
+  <div class="field" id="aimRow" hidden>
+    <label for="alAimSel">Set heading from another photo</label>
+    <select id="alAimSel" style="width:100%"></select>
+    <p class="sub">Pick a photo whose camera position is visible here, then tap that spot in the image. The heading is worked out from the two positions.</p>
+    <button id="alAim" class="ghost" style="margin-top:8px">Tap its spot in this photo</button>
   </div>
   <div class="row"><button id="alRe" class="ghost">Re-place on floor</button><button id="alDone" class="primary">Done</button></div>
 </aside>
@@ -308,6 +330,7 @@
   <button id="bPlans" hidden>Plans</button>
   <button id="bPanos" aria-pressed="false">Photo list</button>
   <button id="bAlign" aria-pressed="false" hidden>Align</button>
+  <button id="bLayout" aria-pressed="false" hidden>Layout</button>
   <span class="gap"></span>
   <button id="bSave" class="ghost">Save view</button>
   <button id="bNew" class="ghost">New</button>
@@ -512,7 +535,7 @@ const S = {
   orbitPose: null, prevMode: 'dollhouse',
   top: 0, bot: 0, ymin: 0, span: 1, cutTop: 1000, cutBot: 0,
   meshOn: true, cloud: null, cloudAbort: false,
-  pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
+  photoOnly: false, spaceName: '', aiming: null, pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
   panos: [], pano: null, panoToken: 0, panoFov: 75, overlay: 0, saved: new Map(), placingPano: null, materials: [], lru: [],
 };
 const planeTop = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
@@ -565,6 +588,7 @@ function showManifest(sel) {
   row('Ceiling plans', sel.ceil.length ? `${sel.ceil.length} found` : 'None', sel.ceil.length ? 'ok' : 'note');
   row('Point cloud (optional)', sel.cloud ? fmtMB(sel.cloud.size) : 'Not included', sel.cloud ? 'ok' : 'note');
   $('#manifest').hidden = false;
+  $('#photoStartRow').hidden = true;
   $('#cloudStartRow').hidden = !sel.cloud;
   $('#drop').hidden = true;
   $('#openBtn').disabled = !(sel.obj && sel.mtl && sel.textures.length);
@@ -584,7 +608,7 @@ folderInput.onchange = () => acceptFiles(folderInput.files);
 filesInput.onchange = () => acceptFiles(filesInput.files);
 $('#pickFolder').onclick = () => folderInput.click();
 $('#pickFiles').onclick = () => filesInput.click();
-$('#repick').onclick = () => { $('#manifest').hidden = true; $('#drop').hidden = false; $('#startError').hidden = true; folderInput.value = ''; filesInput.value = ''; };
+$('#repick').onclick = () => { $('#manifest').hidden = true; $('#photoStartRow').hidden = false; $('#drop').hidden = false; $('#startError').hidden = true; folderInput.value = ''; filesInput.value = ''; };
 
 async function filesFromDrop(dt) {
   // Entries must be collected synchronously, before the first await.
@@ -907,6 +931,8 @@ function updateToolbar() {
   $('#bWalk').setAttribute('aria-pressed', S.mode === 'walk' || S.placing);
   $('#bMeasure').setAttribute('aria-pressed', S.measure);
   $('#bPhoto').setAttribute('aria-pressed', S.mode === 'pano');
+  $('#bLayout').setAttribute('aria-pressed', S.mode === 'layout');
+  $('#lyScale').setAttribute('aria-pressed', LY.tool === 'scale');
   $('#bMeasure').disabled = S.mode === 'walk' || S.mode === 'pano';
   $('#bPanos').setAttribute('aria-pressed', !$('#panoPanel').hidden);
   $('#bAlign').hidden = S.mode !== 'pano';
@@ -1082,7 +1108,7 @@ canvas.addEventListener('pointerup', (e) => {
   const quick = performance.now() - down.t < 600;
   down = null;
   if (moved > 6 || !quick) return;
-  if (S.placingPano) {
+  if (S.placingPano && !S.photoOnly) {
     const h = pick(e.clientX, e.clientY, true);
     if (h) placePano(S.placingPano, h.point); else setHint('No floor there. Tap a floor surface, or take the ceiling off in Section.');
   } else if (S.placing) {
@@ -1091,6 +1117,8 @@ canvas.addEventListener('pointerup', (e) => {
   } else if (S.measure && S.mode !== 'walk' && S.mode !== 'pano') {
     const h = pick(e.clientX, e.clientY, false);
     if (h) addMeasurePoint(h.point);
+  } else if (S.aiming && S.mode === 'pano') {
+    finishAim(e.clientX, e.clientY);
   } else if (S.mode === 'dollhouse' || S.mode === 'top') {
     const p = pickPin(e.clientX, e.clientY);
     if (p) enterPano(p);
@@ -1108,7 +1136,7 @@ window.addEventListener('keydown', (e) => {
   if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   keys.add(e.code);
   if ((S.mode === 'walk' || S.mode === 'pano') && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-  if (e.code === 'Escape') { if (S.mode === 'walk' || S.mode === 'pano') setMode(S.prevMode); else if (S.placingPano) { S.placingPano = null; setHint(''); } else if (S.placing) startPlacing(); else if (S.measure) toggleMeasure(false); }
+  if (e.code === 'Escape') { if (S.aiming) { cancelAim(); } else if (S.photoOnly) { if (S.mode === 'pano') showLayout(); else if (LY.tool || LY.placing) { LY.tool = null; LY.pts = []; LY.placing = null; setHint(''); updateToolbar(); } } else if (S.mode === 'walk' || S.mode === 'pano') setMode(S.prevMode); else if (S.placingPano) { S.placingPano = null; setHint(''); } else if (S.placing) startPlacing(); else if (S.measure) toggleMeasure(false); }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -1441,7 +1469,7 @@ const coarse = matchMedia('(pointer: coarse)').matches;
 // Placements are stored in MatterPak coordinates (Z up), independent of the viewer's Y-up scene.
 const toMP = (w) => ({ x: w.x, y: -w.z, z: w.y });
 const fromMP = (e) => ({ x: e.x, y: e.z, z: -e.y });
-const storeKey = () => `dinto-space-viewer:panos:${S.sel.obj.name}:${S.sel.obj.size}`;
+const storeKey = () => (S.photoOnly ? `dinto-space-viewer:photos:${S.spaceName}` : `dinto-space-viewer:panos:${S.sel.obj.name}:${S.sel.obj.size}`);
 
 function loadSavedPlacements() {
   S.saved = new Map();
@@ -1490,6 +1518,7 @@ function addPanoFiles(list) {
   }
   S.panos.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   renderPanoList();
+  if (S.photoOnly) { const next = S.panos.find((q) => !q.placed); if (next && S.mode === 'layout') { LY.placing = next; setHint(`Tap the plan where ${next.name} was taken.`); } }
   if (insp) showNotice('INSP files are usually unstitched. If a photo shows up as two circles, export it from Insta360 Studio as a JPEG and add that file instead.');
 }
 function renderPanoList() {
@@ -1507,6 +1536,7 @@ function renderPanoList() {
   }
 }
 function startPlacingPano(p) {
+  if (S.photoOnly) { showLayout(); LY.placing = p; setHint('Tap the plan where this photo was taken.'); return; }
   if (S.mode === 'walk' || S.mode === 'pano') setMode(S.prevMode);
   S.placing = false;
   if (S.measure) toggleMeasure(false);
@@ -1568,7 +1598,7 @@ function setMatOpacity(op) {
 function applyOverlay() {
   if (S.mode !== 'pano') return;
   const op = S.overlay / 100;
-  S.root.visible = op > 0;
+  if (S.root) S.root.visible = op > 0;
   setMatOpacity(Math.max(op, 0.01));
 }
 function syncAlign() {
@@ -1577,6 +1607,12 @@ function syncAlign() {
   $('#alHead').value = p.heading; $('#alHeadOut').textContent = p.heading.toFixed(1) + '°';
   $('#alLens').value = p.lens; $('#alLensOut').textContent = fmtImperial(p.lens);
   $('#alOver').value = S.overlay; $('#alOverOut').textContent = S.overlay + '%';
+  $('#alOverField').hidden = !S.root;
+  $('#alRe').textContent = S.photoOnly ? 'Move on the plan' : 'Re-place on floor';
+  const others = S.panos.filter((q) => q.placed && q !== p).sort((a, b) => Math.hypot(a.placed.x - p.placed.x, a.placed.z - p.placed.z) - Math.hypot(b.placed.x - p.placed.x, b.placed.z - p.placed.z));
+  $('#alAimSel').innerHTML = '';
+  for (const q of others) { const o = document.createElement('option'); o.value = q.name; o.textContent = q.name; $('#alAimSel').append(o); }
+  $('#aimRow').hidden = !others.length;
 }
 function rebuildHotspots() {
   const box = $('#hotspots'); box.innerHTML = ''; hotEls.clear();
@@ -1614,7 +1650,9 @@ async function enterPano(p, opts = {}) {
     return;
   }
   if (token !== S.panoToken) return;
+  if (LY.open) hideLayout();
   if (!hopping) {
+    $('#panoPanel').hidden = true;
     const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
     if (Math.hypot(dir.x, dir.z) > 0.15) panoLook.yaw = Math.atan2(-dir.x, -dir.z);
     panoLook.pitch = 0;
@@ -1638,7 +1676,8 @@ async function enterPano(p, opts = {}) {
 function exitPano() {
   S.panoToken++;
   panoGroup.visible = false;
-  S.root.visible = true; setMatOpacity(1);
+  if (S.root) S.root.visible = true;
+  setMatOpacity(1);
   $('#hotspots').innerHTML = ''; hotEls.clear();
   $('#alignPanel').hidden = true; $('#fade').style.opacity = 0;
   S.pano = null;
@@ -1666,6 +1705,7 @@ jsonInput.onchange = async () => {
         S.saved.set(e.name, { name: e.name, x: e.x, y: e.y, z: e.z, heading: +e.heading || 0, lens: +e.lens || 1.5 }); n++;
       }
     }
+    if (d.plan && d.plan.mPerPx > 0) { LY.savedPlan = d.plan; if (LY.plan && LY.plan.name === d.plan.name) LY.plan.mPerPx = d.plan.mPerPx; }
     for (const p of S.panos) applySaved(p);
     savePlacements(); renderPanoList();
     showNotice(n ? `Imported ${n} placement${n > 1 ? 's' : ''}. They apply to photos with matching file names.` : 'No placements were found in that file.');
@@ -1674,12 +1714,238 @@ jsonInput.onchange = async () => {
 };
 $('#expPlace').onclick = () => {
   savePlacements();
-  const data = { app: 'dinto-space-viewer', version: 1, space: S.sel.obj.name, panos: [...S.saved.values()] };
+  const data = { app: 'dinto-space-viewer', version: 1, space: S.photoOnly ? S.spaceName : S.sel.obj.name, panos: [...S.saved.values()], plan: LY.plan ? { name: LY.plan.name, mPerPx: LY.plan.mPerPx } : (LY.savedPlan || null) };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   a.download = 'panorama-placements.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 };
+
+/* ---------- photo-only spaces: a 2D layout for placing 360° photos ---------- */
+const LY = { open: false, cx: 0, cy: 0, zoom: 12, plan: null, savedPlan: null, tool: null, pts: [], placing: null, drag: null, ptrs: new Map(), pinch: null, w: 0, h: 0, dpr: 1, fitted: false };
+const lc = $('#layoutCanvas');
+const lctx = lc.getContext('2d');
+const lyToScreen = (X, Y) => [(X - LY.cx) * LY.zoom + LY.w / 2, LY.h / 2 - (Y - LY.cy) * LY.zoom];
+const lyToWorld = (sx, sy) => [(sx - LY.w / 2) / LY.zoom + LY.cx, (LY.h / 2 - sy) / LY.zoom + LY.cy];
+// A photo's place is stored as a scene position (x, 0, z). On the layout X = x and "north" Y = -z.
+const lyPos = (p) => [p.placed.x, -p.placed.z];
+
+function parseDistance(str) {
+  const t = String(str || '').trim().toLowerCase().replace(/[”″]/g, '"').replace(/[’′]/g, "'");
+  if (!t) return null;
+  let m = t.match(/^([\d.]+)\s*m(?:eters?|etres?)?$/);
+  if (m) return parseFloat(m[1]);
+  m = t.match(/^([\d.]+)\s*(?:ft|feet|foot|')?\s*(?:([\d.]+)\s*(?:in|inch|inches|")?)?$/);
+  if (m && parseFloat(m[1]) > 0) return (parseFloat(m[1]) * 12 + (m[2] ? parseFloat(m[2]) : 0)) * 0.0254;
+  return null;
+}
+function resizeLayout() {
+  LY.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  LY.w = window.innerWidth; LY.h = window.innerHeight;
+  lc.width = Math.round(LY.w * LY.dpr); lc.height = Math.round(LY.h * LY.dpr);
+}
+window.addEventListener('resize', () => { if (LY.open) resizeLayout(); });
+function fitLayout() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of S.panos) if (p.placed) { const [X, Y] = lyPos(p); x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y); }
+  if (LY.plan) { const m = LY.plan.mPerPx; x0 = Math.min(x0, 0); y1 = Math.max(y1, 0); x1 = Math.max(x1, LY.plan.img.naturalWidth * m); y0 = Math.min(y0, -LY.plan.img.naturalHeight * m); }
+  if (!isFinite(x0)) { LY.cx = 0; LY.cy = 0; LY.zoom = 12; return; }
+  const w = Math.max(4, x1 - x0), h = Math.max(4, y1 - y0);
+  LY.cx = (x0 + x1) / 2; LY.cy = (y0 + y1) / 2;
+  LY.zoom = Math.max(1, Math.min((LY.w * 0.85) / w, (LY.h * 0.8) / h));
+}
+function showLayout() {
+  if (!S.photoOnly) return;
+  if (S.mode === 'pano') exitPano();
+  S.mode = 'layout'; S.placingPano = null; S.aiming = null;
+  $('#hotspots').classList.remove('aiming');
+  LY.open = true; $('#layout').hidden = false; $('#alignPanel').hidden = true;
+  resizeLayout();
+  if (!LY.fitted) { fitLayout(); LY.fitted = true; }
+  updateToolbar();
+}
+function hideLayout() {
+  LY.open = false; $('#layout').hidden = true; LY.placing = null; LY.tool = null; LY.pts = [];
+  setHint('');
+}
+function layoutRender() {
+  const c = lctx;
+  c.setTransform(LY.dpr, 0, 0, LY.dpr, 0, 0);
+  c.fillStyle = '#e9edf0'; c.fillRect(0, 0, LY.w, LY.h);
+  if (LY.plan) {
+    const m = LY.plan.mPerPx, [x0, y0] = lyToScreen(0, 0);
+    c.globalAlpha = 0.95;
+    c.drawImage(LY.plan.img, x0, y0, LY.plan.img.naturalWidth * m * LY.zoom, LY.plan.img.naturalHeight * m * LY.zoom);
+    c.globalAlpha = 1;
+  } else {
+    const step = LY.zoom >= 18 ? 1 : LY.zoom >= 5 ? 5 : 20;
+    const [wx0, wy1] = lyToWorld(0, 0), [wx1, wy0] = lyToWorld(LY.w, LY.h);
+    c.lineWidth = 1;
+    for (let X = Math.floor(wx0 / step) * step; X <= wx1; X += step) { const [sx] = lyToScreen(X, 0); c.strokeStyle = X % (step * 5) === 0 ? '#b9c3cb' : '#d3dae0'; c.beginPath(); c.moveTo(sx, 0); c.lineTo(sx, LY.h); c.stroke(); }
+    for (let Y = Math.floor(wy0 / step) * step; Y <= wy1; Y += step) { const [, sy] = lyToScreen(0, Y); c.strokeStyle = Y % (step * 5) === 0 ? '#b9c3cb' : '#d3dae0'; c.beginPath(); c.moveTo(0, sy); c.lineTo(LY.w, sy); c.stroke(); }
+    c.fillStyle = '#6b7882'; c.font = '13px system-ui, sans-serif';
+    c.fillText(`Grid squares are ${step} m. Add a floor plan, or use Set scale to correct distances.`, 14, LY.h - 96);
+  }
+  // photos
+  S.panos.forEach((p, i) => {
+    if (!p.placed) return;
+    const [X, Y] = lyPos(p), [sx, sy] = lyToScreen(X, Y), h = THREE.MathUtils.degToRad(p.heading);
+    c.strokeStyle = '#0d5c91'; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(sx, sy); c.lineTo(sx - Math.sin(h) * 30, sy - Math.cos(h) * 30); c.stroke();
+    c.fillStyle = '#0d5c91'; c.strokeStyle = '#fff'; c.lineWidth = 3;
+    c.beginPath(); c.arc(sx, sy, 14, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.fillStyle = '#fff'; c.font = '600 13px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(String(i + 1), sx, sy + 0.5);
+    c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  });
+  // scale tool
+  if (LY.tool === 'scale' && LY.pts.length) {
+    c.strokeStyle = '#e0820d'; c.fillStyle = '#e0820d'; c.lineWidth = 3;
+    const sp = LY.pts.map(([X, Y]) => lyToScreen(X, Y));
+    if (sp.length === 2) { c.beginPath(); c.moveTo(sp[0][0], sp[0][1]); c.lineTo(sp[1][0], sp[1][1]); c.stroke(); }
+    for (const [x, y] of sp) { c.beginPath(); c.arc(x, y, 6, 0, Math.PI * 2); c.fill(); }
+  }
+}
+function lyHit(cx, cy) {
+  const r = lc.getBoundingClientRect();
+  let best = null, bd = 22;
+  for (const p of S.panos) { if (!p.placed) continue; const [X, Y] = lyPos(p), [sx, sy] = lyToScreen(X, Y), d = Math.hypot(sx - (cx - r.left), sy - (cy - r.top)); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function lyPlace(p, X, Y) {
+  p.placed = { x: X, y: 0, z: -Y };
+  makePin(p); savePlacements(); renderPanoList();
+  const next = S.panos.find((q) => !q.placed);
+  LY.placing = next || null;
+  setHint(next ? `Placed. Now tap the plan where ${next.name} was taken.` : 'All photos placed. Tap a numbered photo to open it, or drag one to move it.');
+}
+function lyApplyScale(k) {
+  for (const p of S.panos) if (p.placed) { p.placed.x *= k; p.placed.z *= k; if (p.pin) makePin(p); }
+  if (LY.plan) LY.plan.mPerPx *= k;
+  LY.cx *= k; LY.cy *= k; LY.zoom /= k;
+  savePlacements(); savePlanScale();
+}
+function savePlanScale() {
+  if (!LY.plan) return;
+  LY.savedPlan = { name: LY.plan.name, mPerPx: LY.plan.mPerPx };
+  try { localStorage.setItem(storeKey() + ':plan', JSON.stringify(LY.savedPlan)); } catch (_) { /* storage unavailable */ }
+}
+lc.addEventListener('pointerdown', (e) => {
+  LY.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  lc.setPointerCapture(e.pointerId);
+  if (LY.ptrs.size === 2) { const [a, b] = [...LY.ptrs.values()]; LY.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: LY.zoom }; LY.drag = null; return; }
+  const marker = LY.tool || LY.placing ? null : lyHit(e.clientX, e.clientY);
+  LY.drag = { id: e.pointerId, x: e.clientX, y: e.clientY, cx: LY.cx, cy: LY.cy, marker, moved: false, t: performance.now() };
+});
+lc.addEventListener('pointermove', (e) => {
+  if (LY.ptrs.has(e.pointerId)) LY.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (LY.pinch && LY.ptrs.size === 2) { const [a, b] = [...LY.ptrs.values()]; LY.zoom = Math.max(0.5, Math.min(400, LY.pinch.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / LY.pinch.d))); return; }
+  const d = LY.drag;
+  if (!d || d.id !== e.pointerId) return;
+  if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) d.moved = true;
+  if (!d.moved) return;
+  if (d.marker) {
+    const r = lc.getBoundingClientRect(), [X, Y] = lyToWorld(e.clientX - r.left, e.clientY - r.top);
+    d.marker.placed.x = X; d.marker.placed.z = -Y; makePin(d.marker);
+  } else { LY.cx = d.cx - (e.clientX - d.x) / LY.zoom; LY.cy = d.cy + (e.clientY - d.y) / LY.zoom; }
+});
+function lyEnd(e) {
+  LY.ptrs.delete(e.pointerId);
+  if (LY.ptrs.size < 2) LY.pinch = null;
+  const d = LY.drag;
+  if (!d || d.id !== e.pointerId) return;
+  LY.drag = null;
+  if (d.moved) { if (d.marker) savePlacements(); return; }
+  const r = lc.getBoundingClientRect(), [X, Y] = lyToWorld(e.clientX - r.left, e.clientY - r.top);
+  if (LY.tool === 'scale') {
+    LY.pts.push([X, Y]);
+    if (LY.pts.length === 2) {
+      const measured = Math.hypot(LY.pts[0][0] - LY.pts[1][0], LY.pts[0][1] - LY.pts[1][1]);
+      const real = parseDistance(prompt("Real distance between the two points. Feet or meters, for example 24 ft, 24' 6\", or 7.3 m:"));
+      if (real && measured > 1e-6) { lyApplyScale(real / measured); setHint('Scale set.'); setTimeout(() => setHint(''), 2500); }
+      LY.tool = null; LY.pts = []; updateToolbar();
+    }
+  } else if (LY.placing) lyPlace(LY.placing, X, Y);
+  else if (d.marker) enterPano(d.marker);
+}
+lc.addEventListener('pointerup', lyEnd);
+lc.addEventListener('pointercancel', lyEnd);
+lc.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = lc.getBoundingClientRect(), [X0, Y0] = lyToWorld(e.clientX - r.left, e.clientY - r.top);
+  LY.zoom = Math.max(0.5, Math.min(400, LY.zoom * Math.exp(-e.deltaY * 0.0015)));
+  const [X1, Y1] = lyToWorld(e.clientX - r.left, e.clientY - r.top);
+  LY.cx += X0 - X1; LY.cy += Y0 - Y1;
+}, { passive: false });
+
+const planInput = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
+planInput.onchange = async () => {
+  const f = planInput.files[0]; planInput.value = '';
+  if (!f) return;
+  try {
+    const url = URL.createObjectURL(f);
+    const img = new Image(); img.src = url; await img.decode();
+    let m = 30 / img.naturalWidth;                           // first guess: the plan is 30 m wide
+    try { const sv = JSON.parse(localStorage.getItem(storeKey() + ':plan') || 'null'); if (sv && sv.name === f.name && sv.mPerPx > 0) m = sv.mPerPx; } catch (_) { /* ignore */ }
+    if (LY.savedPlan && LY.savedPlan.name === f.name && LY.savedPlan.mPerPx > 0) m = LY.savedPlan.mPerPx;
+    LY.plan = { img, name: f.name, mPerPx: m };
+    savePlanScale(); fitLayout();
+    setHint('Floor plan added. Its size is a guess, so use Set scale on a wall or distance you know.'); setTimeout(() => setHint(''), 6000);
+  } catch (err) { showNotice('That image could not be read. Export the plan as a JPG or PNG first.'); }
+};
+$('#lyPlan').onclick = () => planInput.click();
+$('#lyFit').onclick = () => fitLayout();
+$('#lyScale').onclick = () => {
+  LY.tool = LY.tool === 'scale' ? null : 'scale'; LY.pts = []; LY.placing = null;
+  setHint(LY.tool ? 'Tap two points whose real distance you know, such as the ends of a wall.' : '');
+  updateToolbar();
+};
+$('#bLayout').onclick = () => showLayout();
+
+function openPhotoSpace() {
+  const name = (prompt('Name this space', S.spaceName || 'Untitled space') || '').trim();
+  if (!name) return;
+  S.photoOnly = true; S.spaceName = name; S.mode = 'layout'; S.sel = null;
+  $('#start').hidden = true;
+  $('#extents').textContent = `${name}, photo space`;
+  $('#titlebar').hidden = false; $('#toolbar').hidden = false;
+  for (const id of ['#bDoll', '#bTop', '#bWalk', '#bMeasure', '#bSection', '#bPlans']) $(id).hidden = true;
+  $('#bLayout').hidden = false;
+  camera.far = 300; camera.updateProjectionMatrix();
+  loadSavedPlacements();
+  try { LY.savedPlan = JSON.parse(localStorage.getItem(storeKey() + ':plan') || 'null'); } catch (_) { LY.savedPlan = null; }
+  $('#panoHelp').textContent = 'Add 360° photos, then tap the plan to place each one where it was taken. Tap a numbered photo on the plan, or a ring inside a photo, to move between them.';
+  $('#panoNote').textContent = 'Use JPEG files exported from Insta360 Studio or the Insta360 app. Placements are remembered in this browser for this space. Export them to keep a copy.';
+  $('#panoPanel').hidden = false; renderPanoList();
+  showLayout();
+  setHint('Tap Add photos to load your 360° photos. Then tap the plan to place each one.');
+  setTimeout(() => { if (S.mode === 'layout' && !LY.placing) setHint(''); }, 7000);
+}
+$('#photoStart').onclick = openPhotoSpace;
+
+/* ---------- aiming a photo at another one ---------- */
+function cancelAim() { S.aiming = null; $('#hotspots').classList.remove('aiming'); setHint(''); }
+$('#alAim').onclick = () => {
+  const t = S.panos.find((q) => q.name === $('#alAimSel').value);
+  if (!t || !S.pano) return;
+  S.aiming = t; $('#hotspots').classList.add('aiming');
+  setHint(`Tap the spot in this photo where ${t.name} was taken, such as the camera stand or the floor under it.`);
+};
+function finishAim(cx, cy) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  pickRay.setFromCamera(ndc, camera);
+  const d = pickRay.ray.direction, p = S.pano, t = S.aiming;
+  const clicked = Math.atan2(-d.x, -d.z);
+  const bearing = Math.atan2(-(t.placed.x - p.placed.x), -(t.placed.z - p.placed.z));
+  let h = p.heading + THREE.MathUtils.radToDeg(bearing - clicked);
+  h = ((((h + 180) % 360) + 360) % 360) - 180;
+  p.heading = h;
+  applyPanoTransform(); syncAlign(); savePlacements();
+  cancelAim();
+  setHint(`Heading set to ${h.toFixed(1)}°. Check that other photos' rings line up, then fine-tune with the slider.`);
+  setTimeout(() => { if (S.mode === 'pano') setHint(''); }, 5000);
+}
 
 /* ---------- cleanup controls, photo-first entry ---------- */
 function buildBVH() {
@@ -1794,7 +2060,8 @@ let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (S.root) {
+  if (LY.open) layoutRender();
+  if (S.root || S.photoOnly) {
     if (S.mode === 'walk') {
       const kf = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
       const ks = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
@@ -1810,7 +2077,7 @@ function frame(now) {
       panoLook.yaw += ((keys.has('ArrowLeft') ? 1 : 0) - (keys.has('ArrowRight') ? 1 : 0)) * 1.2 * dt;
       panoLook.pitch = Math.max(-1.2, Math.min(1.2, panoLook.pitch + ((keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0)) * 0.9 * dt));
       camera.rotation.set(panoLook.pitch, panoLook.yaw, 0, 'YXZ');
-    } else {
+    } else if (S.root && S.mode !== 'layout') {
       controls.update();
     }
     updateOverlays();
