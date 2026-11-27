@@ -382,7 +382,7 @@ function blockedAlong(meshes, x, feetY, z, dx, dz, len) {
   }
   return false;
 }
-// st = { x, y, z, targetY }. mx, mz = world velocity in metres per second.
+// st = { x, y, z, targetY }. mx, mz = world velocity in meters per second.
 function stepWalker(meshes, st, mx, mz, dt, collide) {
   const dx = mx * dt, dz = mz * dt;
   if (Math.abs(dx) + Math.abs(dz) > 0) {
@@ -406,8 +406,8 @@ const CLEAN_LEVELS = {
   off: null,
   light: { minDiag: 0.4, sliverL: 1.0, aspect: 0.008 },
   strong: { minDiag: 1.0, sliverL: 0.5, aspect: 0.03 },
-  // Light, plus triangles that have almost no texture area (about 1 px per metre against 240 to 330 for
-  // the rest of a Matterport mesh). Those are single-colour filler patches, the smooth smears over walls.
+  // Light, plus triangles that have almost no texture area (about 1 px per meter against 240 to 330 for
+  // the rest of a Matterport mesh). Those are single-color filler patches, the smooth smears over walls.
   patches: { minDiag: 0.4, sliverL: 1.0, aspect: 0.008, minDens: 20 },
 };
 // Welds vertices (1 cm), finds connected pieces across all meshes, and measures each triangle.
@@ -464,7 +464,7 @@ function analyzeMeshes(meshes) {
       asp[t] = lmax > 1e-9 ? twoArea / (lmax * lmax) : 0;   // 0.87 equilateral, near 0 for a streak
       if (uv && twoArea > 1e-9) {
         const u0 = 6 * t, f1x = uv[u0 + 2] - uv[u0], f1y = uv[u0 + 3] - uv[u0 + 1], f2x = uv[u0 + 4] - uv[u0], f2y = uv[u0 + 5] - uv[u0 + 1];
-        dens[t] = 2048 * Math.sqrt(Math.abs(f1x * f2y - f1y * f2x) / twoArea);   // texture pixels per metre, for a 2048 atlas
+        dens[t] = 2048 * Math.sqrt(Math.abs(f1x * f2y - f1y * f2x) / twoArea);   // texture pixels per meter, for a 2048 atlas
       }
     }
     m.userData.clean = { tris, diag, L, asp, dens };
@@ -535,7 +535,7 @@ const S = {
   orbitPose: null, prevMode: 'dollhouse',
   top: 0, bot: 0, ymin: 0, span: 1, cutTop: 1000, cutBot: 0,
   meshOn: true, cloud: null, cloudAbort: false,
-  photoOnly: false, spaceName: '', aiming: null, pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
+  glide: null, photoOnly: false, spaceName: '', aiming: null, pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
   panos: [], pano: null, panoToken: 0, panoFov: 75, overlay: 0, saved: new Map(), placingPano: null, materials: [], lru: [],
 };
 const planeTop = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
@@ -778,7 +778,7 @@ async function openSpace() {
     if (!meshes.length) throw new Error('The .obj file did not contain any mesh geometry.');
     S.materials = [...used];
 
-    // MatterPak is right-handed, Z up, 1 unit = 1 metre. three.js is Y up.
+    // MatterPak is right-handed, Z up, 1 unit = 1 meter. three.js is Y up.
     root.rotation.x = -Math.PI / 2;
     root.updateMatrixWorld(true);
 
@@ -920,6 +920,7 @@ function setMode(next) {
   if (next === S.mode) { S.placing = false; S.placingPano = null; setHint(''); updateToolbar(); return; }
   if (S.mode === 'walk') exitWalk();
   if (S.mode === 'pano') exitPano();
+  if (LY.open) hideLayout();
   S.placing = false; S.placingPano = null; setHint('');
   if (next === 'top') { if (S.mode === 'dollhouse') saveOrbit(); S.mode = 'top'; goTop(); }
   else { S.mode = 'dollhouse'; goDollhouse(false); }
@@ -1045,7 +1046,7 @@ function updateOverlays() {
   const pano = S.mode === 'pano';
   for (const pin of pins) {
     pin.visible = S.mode === 'dollhouse' || S.mode === 'top';
-    if (pin.visible) pin.scale.setScalar(Math.max(0.02, camera.position.distanceTo(pin.position) * 0.016));
+    if (pin.visible) pin.scale.setScalar(Math.max(0.02, camera.position.distanceTo(pin.position) * 0.009));
   }
   for (const m of measures) { m.ma.visible = m.mb.visible = m.line.visible = !pano; }
   if (pending) pending.m.visible = !pano;
@@ -1301,7 +1302,7 @@ function cloudWorkerMain() {
         if (counts[k] < 65535) counts[k]++;
       }
       counts2.set(counts);
-      // sum over the 3x3x3 neighbourhood with three separable passes
+      // sum over the 3x3x3 neighborhood with three separable passes
       for (let axis = 0; axis < 3; axis++) {
         const st = axis === 0 ? 1 : axis === 1 ? 64 : 4096;
         for (let k = 0; k < 262144; k++) {
@@ -1393,7 +1394,7 @@ function loadCloudChunks(file, budget) {
     w.onmessage = (ev) => {
       const m = ev.data;
       if (m.type === 'progress') setStage(`Reading point cloud (${Math.round((100 * m.read) / m.size)}%, ${(m.kept / 1e6).toFixed(1)} million points kept)`, 0.85 * (m.read / m.size));
-      else if (m.type === 'prep') setStage(`Organising points (${m.done} of ${m.total} blocks)`, 0.85 + 0.15 * (m.done / m.total));
+      else if (m.type === 'prep') setStage(`Organizing points (${m.done} of ${m.total} blocks)`, 0.85 + 0.15 * (m.done / m.total));
       else if (m.type === 'chunk') addCloudChunk(group, m);
       else if (m.type === 'done') {
         CLOUD.group = group; CLOUD.total = m.total;
@@ -1412,7 +1413,7 @@ const _cl = new THREE.Vector3();
 function updateCloudLOD() {
   if (!CLOUD.group || !CLOUD.group.visible || !S.root) return;
   const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-  const focal = renderer.domElement.height / 2 / tanHalf;           // pixels per metre at 1 m
+  const focal = renderer.domElement.height / 2 / tanHalf;           // pixels per meter at 1 m
   const cam = S.root.worldToLocal(_cl.copy(camera.position));
   CLOUD.uFocal.value = focal; CLOUD.uSize.value = 2.2 * CLOUD.sizeMul;
   const T = 1.5;                                                       // target spacing between drawn points, in pixels
@@ -1434,13 +1435,14 @@ function updateCloudLOD() {
 
 function cloudBudgetValue(v) { return v === 'all' ? Infinity : parseInt(v, 10); }
 function autoCloudBudget() { return coarse ? 6e6 : ((navigator.deviceMemory || 8) >= 8 ? Infinity : 12e6); }
-async function runCloudLoad(budget) {
-  if (!S.sel || !S.sel.cloud) return;
+async function runCloudLoad(budget, file) {
+  file = file || S.cloudFile || (S.sel && S.sel.cloud);
+  if (!file) return;
   $('#loadCloud').disabled = true;
   CLOUD.cap = coarse ? 2.5e6 : 6e6;
   try {
     const t0 = performance.now();
-    const res = await loadCloudChunks(S.sel.cloud, budget);
+    const res = await loadCloudChunks(file, budget);
     $('#showCloudRow').hidden = false; $('#showCloud').checked = true; $('#ptSizeRow').hidden = false;
     S.meshOn = false; $('#showMesh').checked = false; S.meshes.forEach((m) => { m.visible = false; });   // points are the picture; the mesh still drives collision and measuring
     $('#cloudStat').textContent = `${(res.total / 1e6).toFixed(1)} million points in ${res.blocks} blocks, loaded in ${Math.round((performance.now() - t0) / 1000)} s. At most ${(CLOUD.cap / 1e6).toFixed(1)} million are drawn at once, the nearest at full density.`;
@@ -1461,6 +1463,11 @@ const panoSphere = new THREE.Mesh(new THREE.SphereGeometry(50, 64, 48).scale(-1,
 panoSphere.renderOrder = -10; panoSphere.frustumCulled = false;
 const panoGroup = new THREE.Group();
 panoGroup.add(panoSphere); panoGroup.visible = false; scene.add(panoGroup);
+const panoMatB = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, depthTest: false });
+const panoSphereB = new THREE.Mesh(panoSphere.geometry, panoMatB);
+panoSphereB.renderOrder = -9; panoSphereB.frustumCulled = false;
+const panoGroupB = new THREE.Group();
+panoGroupB.add(panoSphereB); panoGroupB.visible = false; scene.add(panoGroupB);
 const pins = [];
 const pinGeo = new THREE.SphereGeometry(1, 20, 14);
 const pinMat = new THREE.MeshBasicMaterial({ color: 0x0d5c91, depthTest: false, depthWrite: false });
@@ -1505,9 +1512,55 @@ function pickPin(cx, cy) {
   return hit ? hit.object.userData.pano : null;
 }
 
-const panoInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.insp,image/*' });
+const panoInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.insp,.json,.xyz,image/*,application/json' });
 panoInput.onchange = () => { addPanoFiles(panoInput.files); panoInput.value = ''; };
-function addPanoFiles(list) {
+async function importPlacementsFile(file) {
+  try {
+    const d = JSON.parse(await file.text());
+    let n = 0;
+    for (const e of d.panos || []) {
+      if (e && typeof e.name === 'string' && [e.x, e.y, e.z].every(Number.isFinite)) {
+        S.saved.set(e.name, { name: e.name, x: e.x, y: e.y, z: e.z, heading: +e.heading || 0, lens: +e.lens || 1.5 }); n++;
+      }
+    }
+    if (d.plan && d.plan.mPerPx > 0) { LY.savedPlan = d.plan; if (LY.plan && LY.plan.name === d.plan.name) LY.plan.mPerPx = d.plan.mPerPx; }
+    for (const p of S.panos) applySaved(p);
+    savePlacements(); renderPanoList();
+    if (S.photoOnly) fitLayout();
+    showNotice(n ? `Imported ${n} placement${n > 1 ? 's' : ''}. They apply to photos with matching file names.` : 'No placements were found in that file.');
+  } catch (err) { showNotice('That file is not a placements file.'); }
+}
+// Fit the 3D view to a loaded point cloud (cloud coordinates are Z up, the scene is Y up).
+function fitSpaceToCloud() {
+  const b = new THREE.Box3();
+  const total = CLOUD.chunks.reduce((a, c) => a + c.n, 0);
+  for (const c of CLOUD.chunks) {
+    if (c.n < total * 0.001) continue;                 // blocks with almost no points are stray noise, so ignore them for framing
+    const lo = c.box.min, hi = c.box.max; b.expandByPoint(new THREE.Vector3(lo.x, lo.z, -hi.y)); b.expandByPoint(new THREE.Vector3(hi.x, hi.z, -lo.y));
+  }
+  if (b.isEmpty()) return;
+  S.box.copy(b);
+  const size = b.getSize(new THREE.Vector3());
+  S.diag = size.length(); S.ymin = b.min.y; S.span = Math.max(0.1, size.y);
+  camera.far = S.diag * 12 + 200; camera.updateProjectionMatrix();
+  controls.minDistance = 0.5; controls.maxDistance = S.diag * 4;
+  S.orbitPose = null;
+}
+async function loadSpaceCloud(file) {
+  S.cloudFile = file;
+  await runCloudLoad(autoCloudBudget(), file);
+  if (!CLOUD.group) return;
+  fitSpaceToCloud();
+  for (const id of ['#bDoll', '#bTop', '#bSection']) $(id).hidden = false;
+  $('#cloudField').hidden = false;
+  setMode('dollhouse');
+}
+async function addPanoFiles(list) {
+  const all = [...list];
+  const jsons = all.filter((f) => /\.json$/i.test(f.name));
+  const clouds = all.filter((f) => /\.xyz$/i.test(f.name));
+  list = all.filter((f) => !/\.(json|xyz)$/i.test(f.name));
+  for (const j of jsons) await importPlacementsFile(j);
   let insp = 0;
   for (const f of list) {
     if (S.panos.some((p) => p.name === f.name)) continue;
@@ -1520,6 +1573,7 @@ function addPanoFiles(list) {
   renderPanoList();
   if (S.photoOnly) { const next = S.panos.find((q) => !q.placed); if (next && S.mode === 'layout') { LY.placing = next; setHint(`Tap the plan where ${next.name} was taken.`); } }
   if (insp) showNotice('INSP files are usually unstitched. If a photo shows up as two circles, export it from Insta360 Studio as a JPEG and add that file instead.');
+  if (clouds.length && S.photoOnly) await loadSpaceCloud(clouds[0]);
 }
 function renderPanoList() {
   const ul = $('#panoItems'); ul.innerHTML = '';
@@ -1607,7 +1661,7 @@ function syncAlign() {
   $('#alHead').value = p.heading; $('#alHeadOut').textContent = p.heading.toFixed(1) + '°';
   $('#alLens').value = p.lens; $('#alLensOut').textContent = fmtImperial(p.lens);
   $('#alOver').value = S.overlay; $('#alOverOut').textContent = S.overlay + '%';
-  $('#alOverField').hidden = !S.root;
+  $('#alOverField').hidden = !S.meshes.length;
   $('#alRe').textContent = S.photoOnly ? 'Move on the plan' : 'Re-place on floor';
   const others = S.panos.filter((q) => q.placed && q !== p).sort((a, b) => Math.hypot(a.placed.x - p.placed.x, a.placed.z - p.placed.z) - Math.hypot(b.placed.x - p.placed.x, b.placed.z - p.placed.z));
   $('#alAimSel').innerHTML = '';
@@ -1640,7 +1694,8 @@ async function enterPano(p, opts = {}) {
   if (!p.placed) return;
   const token = ++S.panoToken;
   const hopping = S.mode === 'pano';
-  if (hopping) $('#fade').style.opacity = 1; else setHint('Loading panorama');
+  const glide = hopping && S.pano && S.pano !== p && !opts.align && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (hopping && !glide) $('#fade').style.opacity = 1; else if (!hopping) setHint('Loading panorama');
   let tex;
   try { tex = await getPanoTexture(p); }
   catch (err) {
@@ -1650,6 +1705,7 @@ async function enterPano(p, opts = {}) {
     return;
   }
   if (token !== S.panoToken) return;
+  if (glide) { startGlide(S.pano, p, tex); return; }
   if (LY.open) hideLayout();
   if (!hopping) {
     $('#panoPanel').hidden = true;
@@ -1660,6 +1716,14 @@ async function enterPano(p, opts = {}) {
     leaveOrbit();
     S.mode = 'pano'; controls.enabled = false;
   }
+  commitPano(p, tex, opts);
+  $('#fade').style.opacity = 0;
+  if (!hopping) { setHint('Drag to look around. Tap a blue ring to move to another photo.'); setTimeout(() => { if (S.mode === 'pano') setHint(''); }, 5000); } else setHint('');
+  if (Math.abs(p.aspect - 2) > 0.15 && !p.warned) { p.warned = true; showNotice(`${p.name} is not a 2:1 panorama, so it will look distorted. Export it from Insta360 Studio as an equirectangular JPEG.`); }
+  const next = S.panos.filter((q) => q.placed && q !== p).sort((a, b) => Math.hypot(a.placed.x - p.placed.x, a.placed.z - p.placed.z) - Math.hypot(b.placed.x - p.placed.x, b.placed.z - p.placed.z))[0];
+  if (next) setTimeout(() => { if (S.pano === p) getPanoTexture(next).catch(() => {}); }, 400);
+}
+function commitPano(p, tex, opts = {}) {
   S.pano = p; S.lastPano = p; S.placing = false; S.placingPano = null;
   if (S.measure) toggleMeasure(false);
   panoMat.map = tex; panoMat.needsUpdate = true;
@@ -1667,13 +1731,43 @@ async function enterPano(p, opts = {}) {
   camera.fov = S.panoFov; camera.updateProjectionMatrix();
   if (opts.align) { S.overlay = 40; $('#alignPanel').hidden = false; }
   applyPanoTransform(); applyOverlay(); applyCut(); rebuildHotspots(); syncAlign(); updateToolbar();
-  $('#fade').style.opacity = 0;
-  if (!hopping) { setHint('Drag to look around. Tap a blue ring to move to another photo.'); setTimeout(() => { if (S.mode === 'pano') setHint(''); }, 5000); } else setHint('');
-  if (Math.abs(p.aspect - 2) > 0.15 && !p.warned) { p.warned = true; showNotice(`${p.name} is not a 2:1 panorama, so it will look distorted. Export it from Insta360 Studio as an equirectangular JPEG.`); }
-  const next = S.panos.filter((q) => q.placed && q !== p).sort((a, b) => Math.hypot(a.placed.x - p.placed.x, a.placed.z - p.placed.z) - Math.hypot(b.placed.x - p.placed.x, b.placed.z - p.placed.z))[0];
-  if (next) setTimeout(() => { if (S.pano === p) getPanoTexture(next).catch(() => {}); }, 400);
+}
+// Moving between photos: the camera travels from one photo's position to the next while the new photo fades in.
+// Each photo is shown on a sphere around its own position, sized to the distance travelled, so things move with parallax.
+function startGlide(from, to, tex) {
+  if (S.glide) finishGlide();
+  const a = new THREE.Vector3(from.placed.x, from.placed.y + from.lens, from.placed.z);
+  const b = new THREE.Vector3(to.placed.x, to.placed.y + to.lens, to.placed.z);
+  const d = a.distanceTo(b), R = Math.max(4, d * 2.2);
+  panoMatB.map = tex; panoMatB.needsUpdate = true; panoMatB.opacity = 0;
+  panoGroupB.position.copy(b);
+  panoGroupB.rotation.y = -Math.PI / 2 + THREE.MathUtils.degToRad(to.heading);
+  panoGroup.scale.setScalar(R / 50); panoGroupB.scale.setScalar(R / 50); panoGroupB.visible = true;
+  $('#hotspots').innerHTML = ''; hotEls.clear();
+  S.glide = { to, tex, a, b, t0: performance.now(), dur: Math.min(1100, 450 + d * 130), hold: null };
+}
+function updateGlide(now) {
+  const g = S.glide;
+  if (!g) return;
+  const k = g.hold != null ? g.hold : Math.min(1, (now - g.t0) / g.dur);
+  const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+  camera.position.lerpVectors(g.a, g.b, e);
+  panoMatB.opacity = THREE.MathUtils.smoothstep(e, 0.25, 0.85);
+  if (k >= 1) finishGlide();
+}
+function endGlideVisuals() {
+  S.glide = null;
+  panoGroupB.visible = false; panoMatB.map = null; panoMatB.opacity = 0;
+  panoGroup.scale.setScalar(1); panoGroupB.scale.setScalar(1);
+}
+function finishGlide() {
+  const g = S.glide;
+  if (!g) return;
+  endGlideVisuals();
+  commitPano(g.to, g.tex);
 }
 function exitPano() {
+  if (S.glide) endGlideVisuals();
   S.panoToken++;
   panoGroup.visible = false;
   if (S.root) S.root.visible = true;
@@ -1696,22 +1790,7 @@ $('#addPanos').onclick = () => panoInput.click();
 
 const jsonInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json' });
 $('#impPlace').onclick = () => jsonInput.click();
-jsonInput.onchange = async () => {
-  try {
-    const d = JSON.parse(await jsonInput.files[0].text());
-    let n = 0;
-    for (const e of d.panos || []) {
-      if (e && typeof e.name === 'string' && [e.x, e.y, e.z].every(Number.isFinite)) {
-        S.saved.set(e.name, { name: e.name, x: e.x, y: e.y, z: e.z, heading: +e.heading || 0, lens: +e.lens || 1.5 }); n++;
-      }
-    }
-    if (d.plan && d.plan.mPerPx > 0) { LY.savedPlan = d.plan; if (LY.plan && LY.plan.name === d.plan.name) LY.plan.mPerPx = d.plan.mPerPx; }
-    for (const p of S.panos) applySaved(p);
-    savePlacements(); renderPanoList();
-    showNotice(n ? `Imported ${n} placement${n > 1 ? 's' : ''}. They apply to photos with matching file names.` : 'No placements were found in that file.');
-  } catch (err) { showNotice('That file is not a placements file.'); }
-  jsonInput.value = '';
-};
+jsonInput.onchange = async () => { const f = jsonInput.files[0]; jsonInput.value = ''; if (f) await importPlacementsFile(f); };
 $('#expPlace').onclick = () => {
   savePlacements();
   const data = { app: 'dinto-space-viewer', version: 1, space: S.photoOnly ? S.spaceName : S.sel.obj.name, panos: [...S.saved.values()], plan: LY.plan ? { name: LY.plan.name, mPerPx: LY.plan.mPerPx } : (LY.savedPlan || null) };
@@ -1757,6 +1836,7 @@ function fitLayout() {
 function showLayout() {
   if (!S.photoOnly) return;
   if (S.mode === 'pano') exitPano();
+  leaveOrbit();
   S.mode = 'layout'; S.placingPano = null; S.aiming = null;
   $('#hotspots').classList.remove('aiming');
   LY.open = true; $('#layout').hidden = false; $('#alignPanel').hidden = true;
@@ -1906,6 +1986,9 @@ function openPhotoSpace() {
   const name = (prompt('Name this space', S.spaceName || 'Untitled space') || '').trim();
   if (!name) return;
   S.photoOnly = true; S.spaceName = name; S.mode = 'layout'; S.sel = null;
+  S.root = new THREE.Group(); S.root.rotation.x = -Math.PI / 2; scene.add(S.root); S.root.updateMatrixWorld(true);
+  S.meshes = []; S.materials = [];
+  $('#addPanos').textContent = 'Add photos and files';
   $('#start').hidden = true;
   $('#extents').textContent = `${name}, photo space`;
   $('#titlebar').hidden = false; $('#toolbar').hidden = false;
@@ -1915,7 +1998,7 @@ function openPhotoSpace() {
   loadSavedPlacements();
   try { LY.savedPlan = JSON.parse(localStorage.getItem(storeKey() + ':plan') || 'null'); } catch (_) { LY.savedPlan = null; }
   $('#panoHelp').textContent = 'Add 360° photos, then tap the plan to place each one where it was taken. Tap a numbered photo on the plan, or a ring inside a photo, to move between them.';
-  $('#panoNote').textContent = 'Use JPEG files exported from Insta360 Studio or the Insta360 app. Placements are remembered in this browser for this space. Export them to keep a copy.';
+  $('#panoNote').textContent = 'Use JPEG files exported from the Insta360 app. You can add the photos together with panorama-placements.json and cloud.xyz from photos_to_3d.py in one go. Placements are remembered in this browser for this space.';
   $('#panoPanel').hidden = false; renderPanoList();
   showLayout();
   setHint('Tap Add photos to load your 360° photos. Then tap the plan to place each one.');
@@ -2074,6 +2157,7 @@ function frame(now) {
       camera.position.set(walk.x, walk.y + EYE, walk.z);
       camera.rotation.set(walk.pitch, walk.yaw, 0, 'YXZ');
     } else if (S.mode === 'pano') {
+      updateGlide(now);
       panoLook.yaw += ((keys.has('ArrowLeft') ? 1 : 0) - (keys.has('ArrowRight') ? 1 : 0)) * 1.2 * dt;
       panoLook.pitch = Math.max(-1.2, Math.min(1.2, panoLook.pitch + ((keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0)) * 0.9 * dt));
       camera.rotation.set(panoLook.pitch, panoLook.yaw, 0, 'YXZ');
