@@ -168,6 +168,10 @@
     <small>If your browser has no folder picker (iPad, for example), use Choose files and select everything in the folder.</small>
   </div>
   <div id="photoStartRow"><button id="photoStart" class="ghost">Or start a space from 360° photos, no scan needed</button></div>
+  <div class="opt" id="tourRow" style="margin-top:12px">
+    <input id="tourUrl" type="text" inputmode="url" autocomplete="off" aria-label="Tour address" placeholder="Open a tour, for example tours/prospect/tour.json" style="flex:1;min-width:0;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff">
+    <button id="tourGo">Open tour</button>
+  </div>
   <div id="manifest" hidden>
     <ul id="manifestList"></ul>
     <div class="opt">
@@ -220,6 +224,7 @@
 
 <aside id="mlist" class="panel" hidden>
   <h2>Measurements</h2>
+  <p class="sub" id="mNote">In photos, distances come from depth worked out between photos. Check important dimensions with a tape.</p>
   <ul id="mItems"></ul>
   <button id="mClear" class="ghost">Clear all</button>
 </aside>
@@ -535,7 +540,7 @@ const S = {
   orbitPose: null, prevMode: 'dollhouse',
   top: 0, bot: 0, ymin: 0, span: 1, cutTop: 1000, cutBot: 0,
   meshOn: true, cloud: null, cloudAbort: false,
-  glide: null, photoOnly: false, spaceName: '', aiming: null, pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
+  glide: null, depthFiles: new Map(), tour: null, photoOnly: false, spaceName: '', aiming: null, pending: [], cleanLevel: 'light', cleanStat: null, analyzed: false, lastPano: null,
   panos: [], pano: null, panoToken: 0, panoFov: 75, overlay: 0, saved: new Map(), placingPano: null, materials: [], lru: [],
 };
 const planeTop = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
@@ -588,7 +593,7 @@ function showManifest(sel) {
   row('Ceiling plans', sel.ceil.length ? `${sel.ceil.length} found` : 'None', sel.ceil.length ? 'ok' : 'note');
   row('Point cloud (optional)', sel.cloud ? fmtMB(sel.cloud.size) : 'Not included', sel.cloud ? 'ok' : 'note');
   $('#manifest').hidden = false;
-  $('#photoStartRow').hidden = true;
+  $('#photoStartRow').hidden = true; $('#tourRow').hidden = true;
   $('#cloudStartRow').hidden = !sel.cloud;
   $('#drop').hidden = true;
   $('#openBtn').disabled = !(sel.obj && sel.mtl && sel.textures.length);
@@ -608,7 +613,7 @@ folderInput.onchange = () => acceptFiles(folderInput.files);
 filesInput.onchange = () => acceptFiles(filesInput.files);
 $('#pickFolder').onclick = () => folderInput.click();
 $('#pickFiles').onclick = () => filesInput.click();
-$('#repick').onclick = () => { $('#manifest').hidden = true; $('#photoStartRow').hidden = false; $('#drop').hidden = false; $('#startError').hidden = true; folderInput.value = ''; filesInput.value = ''; };
+$('#repick').onclick = () => { $('#manifest').hidden = true; $('#photoStartRow').hidden = false; $('#tourRow').hidden = false; $('#drop').hidden = false; $('#startError').hidden = true; folderInput.value = ''; filesInput.value = ''; };
 
 async function filesFromDrop(dt) {
   // Entries must be collected synchronously, before the first await.
@@ -934,7 +939,8 @@ function updateToolbar() {
   $('#bPhoto').setAttribute('aria-pressed', S.mode === 'pano');
   $('#bLayout').setAttribute('aria-pressed', S.mode === 'layout');
   $('#lyScale').setAttribute('aria-pressed', LY.tool === 'scale');
-  $('#bMeasure').disabled = S.mode === 'walk' || S.mode === 'pano';
+  $('#bMeasure').hidden = S.photoOnly && !(S.mode === 'pano' && S.pano && S.pano.depth);
+  $('#bMeasure').disabled = S.mode === 'walk';
   $('#bPanos').setAttribute('aria-pressed', !$('#panoPanel').hidden);
   $('#bAlign').hidden = S.mode !== 'pano';
   $('#bAlign').setAttribute('aria-pressed', !$('#alignPanel').hidden);
@@ -1048,8 +1054,8 @@ function updateOverlays() {
     pin.visible = S.mode === 'dollhouse' || S.mode === 'top';
     if (pin.visible) pin.scale.setScalar(Math.max(0.02, camera.position.distanceTo(pin.position) * 0.009));
   }
-  for (const m of measures) { m.ma.visible = m.mb.visible = m.line.visible = !pano; }
-  if (pending) pending.m.visible = !pano;
+  for (const m of measures) { m.ma.visible = m.mb.visible = m.line.visible = true; }
+  if (pending) pending.m.visible = true;
   updateHotspots();
   const all = pending ? [pending.m] : [];
   measures.forEach((m) => all.push(m.ma, m.mb));
@@ -1057,7 +1063,7 @@ function updateOverlays() {
   const w = window.innerWidth, h = window.innerHeight;
   for (const m of measures) {
     _v.copy(m.a).add(m.b).multiplyScalar(0.5).project(camera);
-    const vis = !pano && _v.z < 1 && _v.z > -1;
+    const vis = _v.z < 1 && _v.z > -1;
     m.el.style.display = vis ? 'block' : 'none';
     m.el.style.left = ((_v.x + 1) / 2) * w + 'px';
     m.el.style.top = ((1 - _v.y) / 2) * h + 'px';
@@ -1115,11 +1121,14 @@ canvas.addEventListener('pointerup', (e) => {
   } else if (S.placing) {
     const h = pick(e.clientX, e.clientY, true);
     if (h) enterWalk(h.point); else setHint('No floor there. Tap a floor surface, or take the ceiling off in Section.');
-  } else if (S.measure && S.mode !== 'walk' && S.mode !== 'pano') {
-    const h = pick(e.clientX, e.clientY, false);
-    if (h) addMeasurePoint(h.point);
   } else if (S.aiming && S.mode === 'pano') {
     finishAim(e.clientX, e.clientY);
+  } else if (S.measure && S.mode === 'pano') {
+    const pt = panoDepthPoint(e.clientX, e.clientY);
+    if (pt) addMeasurePoint(pt); else setHint('No depth there. Tap a textured surface, not a plain wall, glass, or the sky.');
+  } else if (S.measure && S.mode !== 'walk') {
+    const h = pick(e.clientX, e.clientY, false);
+    if (h) addMeasurePoint(h.point);
   } else if (S.mode === 'dollhouse' || S.mode === 'top') {
     const p = pickPin(e.clientX, e.clientY);
     if (p) enterPano(p);
@@ -1223,7 +1232,15 @@ function cloudWorkerMain() {
     return true;
   }
   async function run(file, budget) {
-    const reader = file.stream().getReader();
+    let stream, size, name;
+    if (typeof file === 'string') {
+      const r = await fetch(file);
+      if (!r.ok) throw new Error('Could not download the point cloud (' + r.status + ').');
+      stream = r.body; size = +r.headers.get('content-length') || 1e8; name = file.split('?')[0];
+      if (/gzip/i.test(r.headers.get('content-encoding') || '')) name = name.replace(/\.gz$/i, '');   // the browser already unpacked it
+    } else { stream = file.stream(); size = file.size; name = file.name; }
+    if (/\.gz$/i.test(name)) { stream = stream.pipeThrough(new DecompressionStream('gzip')); size *= 3.5; }
+    const reader = stream.getReader();
     const chunks = new Map();
     let carry = null, line = 0, kept = 0, read = 0, stride = 1, first = true, lastKey = -1, last = null, lastReport = 0;
     for (;;) {
@@ -1237,7 +1254,7 @@ function cloudWorkerMain() {
         let nl = 0;
         for (let i = 0; i < buf.length; i++) if (buf[i] === 10) nl++;
         const avg = nl ? buf.length / nl : 40;
-        const est = file.size / avg;
+        const est = size / avg;
         stride = budget && isFinite(budget) ? Math.max(1, Math.ceil((est / budget) * 1.03)) : 1;
       }
       let s = 0;
@@ -1273,9 +1290,9 @@ function cloudWorkerMain() {
         line++; s = i + 1;
       }
       carry = buf.subarray(s);
-      if (read - lastReport > 64e6) { lastReport = read; self.postMessage({ type: 'progress', read, size: file.size, kept }); }
+      if (read - lastReport > 64e6) { lastReport = read; self.postMessage({ type: 'progress', read, size, kept }); }
     }
-    self.postMessage({ type: 'progress', read: file.size, size: file.size, kept });
+    self.postMessage({ type: 'progress', read: size, size, kept });
     const keys = [...chunks.keys()].sort((a, b) => a - b);
     const counts = new Uint16Array(64 * 64 * 64), counts2 = new Uint32Array(64 * 64 * 64), tmp = new Uint32Array(64 * 64 * 64);
     let doneN = 0;
@@ -1393,7 +1410,7 @@ function loadCloudChunks(file, budget) {
     $('#cancelCloud').onclick = () => { w.terminate(); CLOUD.worker = null; clearCloud(); URL.revokeObjectURL(url); reject(new Error('cancelled')); };
     w.onmessage = (ev) => {
       const m = ev.data;
-      if (m.type === 'progress') setStage(`Reading point cloud (${Math.round((100 * m.read) / m.size)}%, ${(m.kept / 1e6).toFixed(1)} million points kept)`, 0.85 * (m.read / m.size));
+      if (m.type === 'progress') setStage(`Reading point cloud (${Math.min(100, Math.round((100 * m.read) / m.size))}%, ${(m.kept / 1e6).toFixed(1)} million points kept)`, 0.85 * Math.min(1, m.read / m.size));
       else if (m.type === 'prep') setStage(`Organizing points (${m.done} of ${m.total} blocks)`, 0.85 + 0.15 * (m.done / m.total));
       else if (m.type === 'chunk') addCloudChunk(group, m);
       else if (m.type === 'done') {
@@ -1512,7 +1529,7 @@ function pickPin(cx, cy) {
   return hit ? hit.object.userData.pano : null;
 }
 
-const panoInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.insp,.json,.xyz,image/*,application/json' });
+const panoInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.insp,.json,.xyz,.d16,image/*,application/json' });
 panoInput.onchange = () => { addPanoFiles(panoInput.files); panoInput.value = ''; };
 async function importPlacementsFile(file) {
   try {
@@ -1559,13 +1576,14 @@ async function addPanoFiles(list) {
   const all = [...list];
   const jsons = all.filter((f) => /\.json$/i.test(f.name));
   const clouds = all.filter((f) => /\.xyz$/i.test(f.name));
-  list = all.filter((f) => !/\.(json|xyz)$/i.test(f.name));
+  for (const f of all.filter((q) => /\.d16$/i.test(q.name))) { const nm = f.name.replace(/\.d16$/i, ''); S.depthFiles.set(nm, f); const q = S.panos.find((x) => x.name === nm); if (q) { q.depthFile = f; q.depth = undefined; } }
+  list = all.filter((f) => !/\.(json|xyz|d16)$/i.test(f.name));
   for (const j of jsons) await importPlacementsFile(j);
   let insp = 0;
   for (const f of list) {
     if (S.panos.some((p) => p.name === f.name)) continue;
     if (/\.insp$/i.test(f.name)) insp++;
-    const p = { name: f.name, file: f, placed: null, heading: 0, lens: 1.5, tex: null, pin: null, aspect: 2, warned: false };
+    const p = { name: f.name, file: f, url: null, depthFile: S.depthFiles.get(f.name) || null, depthUrl: null, placed: null, heading: 0, lens: 1.5, tex: null, pin: null, aspect: 2, warned: false };
     S.panos.push(p);
     applySaved(p);
   }
@@ -1608,9 +1626,10 @@ function placePano(p, pt) {
 
 async function getPanoTexture(p) {
   if (!p.tex) {
-    const url = URL.createObjectURL(p.file);
+    const url = p.file ? URL.createObjectURL(p.file) : p.url;
     try {
       const img = new Image();
+      if (!p.file) img.crossOrigin = 'anonymous';
       img.src = url;
       await img.decode();
       const maxW = Math.min(renderer.capabilities.maxTextureSize, coarse ? 4096 : 8192);
@@ -1625,7 +1644,7 @@ async function getPanoTexture(p) {
       t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.needsUpdate = true;
       p.aspect = img.naturalWidth / img.naturalHeight;
       p.tex = t;
-    } finally { URL.revokeObjectURL(url); }
+    } finally { if (p.file) URL.revokeObjectURL(url); }
   }
   S.lru = S.lru.filter((x) => x !== p); S.lru.push(p);
   while (S.lru.length > 4) {
@@ -1723,9 +1742,53 @@ async function enterPano(p, opts = {}) {
   const next = S.panos.filter((q) => q.placed && q !== p).sort((a, b) => Math.hypot(a.placed.x - p.placed.x, a.placed.z - p.placed.z) - Math.hypot(b.placed.x - p.placed.x, b.placed.z - p.placed.z))[0];
   if (next) setTimeout(() => { if (S.pano === p) getPanoTexture(next).catch(() => {}); }, 400);
 }
+// Depth for a photo: 16-bit millimeters, gzip-compressed, from photos_to_3d.py. null means there is none.
+async function loadDepth(p) {
+  if (p.depth !== undefined) return p.depth;
+  p.depth = null;
+  try {
+    let blob = p.depthFile || null;
+    if (!blob && p.depthUrl) { const r = await fetch(p.depthUrl); if (r.ok) blob = await r.blob(); }
+    if (blob) {
+      let buf = await blob.arrayBuffer();
+      const head = new Uint8Array(buf, 0, 2);
+      if (head[0] === 0x1f && head[1] === 0x8b) buf = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+      const dv = new DataView(buf), w = dv.getUint32(0, true), h = dv.getUint32(4, true);
+      if (w > 0 && h > 0 && buf.byteLength >= 8 + w * h * 2) p.depth = { w, h, data: new Uint16Array(buf, 8, w * h) };
+    }
+  } catch (err) { console.warn('depth unavailable for', p.name, err); }
+  if (S.pano === p) { updateToolbar(); if (!p.depth && S.measure) toggleMeasure(false); }
+  return p.depth;
+}
+// The 3D point under a tap inside a photo: the camera ray, scaled by the depth stored for that direction.
+function panoDepthPoint(cx, cy) {
+  const p = S.pano;
+  if (!p || !p.depth) return null;
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  pickRay.setFromCamera(ndc, camera);
+  const d = pickRay.ray.direction.clone().normalize();
+  const h = THREE.MathUtils.degToRad(p.heading);
+  const fx = -Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
+  const x = d.x * rx + d.z * rz, y = d.y, z = d.x * fx + d.z * fz;
+  const lon = Math.atan2(x, z), lat = Math.asin(THREE.MathUtils.clamp(y, -1, 1));
+  const { w, h: H, data } = p.depth;
+  const u0 = Math.floor((lon / (2 * Math.PI) + 0.5) * w), v0 = Math.floor((0.5 - lat / Math.PI) * H);
+  const vals = [];
+  for (let dv = -4; dv <= 4; dv++) for (let du = -4; du <= 4; du++) {
+    const v = v0 + dv, u = (((u0 + du) % w) + w) % w;
+    if (v < 0 || v >= H) continue;
+    const mm = data[v * w + u];
+    if (mm > 0) vals.push(mm);
+  }
+  if (vals.length < 5) return null;
+  vals.sort((a, b) => a - b);
+  const depth = vals[vals.length >> 1] / 1000;
+  return new THREE.Vector3(p.placed.x, p.placed.y + p.lens, p.placed.z).addScaledVector(d, depth);
+}
 function commitPano(p, tex, opts = {}) {
   S.pano = p; S.lastPano = p; S.placing = false; S.placingPano = null;
-  if (S.measure) toggleMeasure(false);
+  loadDepth(p);
   panoMat.map = tex; panoMat.needsUpdate = true;
   panoGroup.visible = true;
   camera.fov = S.panoFov; camera.updateProjectionMatrix();
@@ -1982,19 +2045,22 @@ $('#lyScale').onclick = () => {
 };
 $('#bLayout').onclick = () => showLayout();
 
-function openPhotoSpace() {
-  const name = (prompt('Name this space', S.spaceName || 'Untitled space') || '').trim();
-  if (!name) return;
+function beginPhotoSpace(name, label) {
   S.photoOnly = true; S.spaceName = name; S.mode = 'layout'; S.sel = null;
   S.root = new THREE.Group(); S.root.rotation.x = -Math.PI / 2; scene.add(S.root); S.root.updateMatrixWorld(true);
   S.meshes = []; S.materials = [];
   $('#addPanos').textContent = 'Add photos and files';
   $('#start').hidden = true;
-  $('#extents').textContent = `${name}, photo space`;
+  $('#extents').textContent = `${name}, ${label}`;
   $('#titlebar').hidden = false; $('#toolbar').hidden = false;
   for (const id of ['#bDoll', '#bTop', '#bWalk', '#bMeasure', '#bSection', '#bPlans']) $(id).hidden = true;
   $('#bLayout').hidden = false;
   camera.far = 300; camera.updateProjectionMatrix();
+}
+function openPhotoSpace() {
+  const name = (prompt('Name this space', S.spaceName || 'Untitled space') || '').trim();
+  if (!name) return;
+  beginPhotoSpace(name, 'photo space');
   loadSavedPlacements();
   try { LY.savedPlan = JSON.parse(localStorage.getItem(storeKey() + ':plan') || 'null'); } catch (_) { LY.savedPlan = null; }
   $('#panoHelp').textContent = 'Add 360° photos, then tap the plan to place each one where it was taken. Tap a numbered photo on the plan, or a ring inside a photo, to move between them.';
@@ -2005,6 +2071,38 @@ function openPhotoSpace() {
   setTimeout(() => { if (S.mode === 'layout' && !LY.placing) setHint(''); }, 7000);
 }
 $('#photoStart').onclick = openPhotoSpace;
+
+/* ---------- tours: a hosted folder made by photos_to_3d.py ---------- */
+async function openTour(address) {
+  const base = new URL(address, location.href);
+  const showErr = (msg) => { $('#progress').hidden = true; $('#start').hidden = false; const e = $('#startError'); e.textContent = msg; e.hidden = false; };
+  $('#start').hidden = true;
+  setStage('Opening the tour', 0.05);
+  let t;
+  try {
+    const res = await fetch(base);
+    if (!res.ok) throw new Error(`The tour file could not be downloaded (${res.status}).`);
+    t = await res.json();
+    if (!Array.isArray(t.panos) || !t.panos.length) throw new Error('This tour has no photos in it.');
+  } catch (err) { showErr(`Could not open that tour. ${err.message || err}`); return; }
+  beginPhotoSpace(t.name || 'Tour', 'tour');
+  S.tour = t;
+  for (const e of t.panos) {
+    if (!e.file || ![e.x, e.y, e.z].every(Number.isFinite)) continue;
+    const p = { name: e.name, file: null, url: new URL(e.file, base).href, depthFile: null, depthUrl: e.depth ? new URL(e.depth, base).href : null, placed: fromMP(e), heading: +e.heading || 0, lens: +e.lens || +t.lens || 1.5, tex: null, pin: null, aspect: 2, warned: false };
+    S.panos.push(p); makePin(p);
+  }
+  renderPanoList();
+  if (t.cloud) {
+    await runCloudLoad(autoCloudBudget(), new URL(t.cloud, base).href);
+    if (CLOUD.group) { fitSpaceToCloud(); for (const id of ['#bDoll', '#bTop', '#bSection']) $(id).hidden = false; $('#cloudField').hidden = false; }
+  }
+  $('#progress').hidden = true;
+  const start = S.panos.find((q) => q.name === t.start) || S.panos[0];
+  if (start) enterPano(start);
+}
+$('#tourGo').onclick = () => { const v = $('#tourUrl').value.trim(); if (v) openTour(v); };
+$('#tourUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#tourGo').click(); });
 
 /* ---------- aiming a photo at another one ---------- */
 function cancelAim() { S.aiming = null; $('#hotspots').classList.remove('aiming'); setHint(''); }
@@ -2170,6 +2268,7 @@ function frame(now) {
   }
   renderFrame();
 }
+{ const tp = new URLSearchParams(location.search).get('tour'); if (tp) openTour(tp); }
 requestAnimationFrame(frame);
 </script>
 </body>

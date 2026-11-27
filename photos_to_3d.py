@@ -8,6 +8,8 @@ Output: in the output folder
                                      (open the viewer, start a photo space, Add photos, Import placements)
           cloud.xyz                  a colored point cloud in meters, Z up (the viewer loads it as a point cloud)
           report.txt                 what worked, what did not, and how the scale was chosen
+          tour/                      a ready-to-host tour: web-sized photos, depth maps, cloud and tour.json
+                                     (open it in the viewer with ?tour=tours/NAME/tour.json)
 
 How it works
   1. COLMAP's panorama pipeline (through pycolmap) finds the position and facing of every photo.
@@ -23,10 +25,13 @@ Limits    Photos need distinctive surfaces and overlap. Large plain walls, repea
           and moving people reduce accuracy or leave gaps. Check report.txt before trusting the result.
 """
 import argparse
+import datetime
+import gzip
 import json
 import math
 import pathlib
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -255,6 +260,7 @@ def dense_points(photos_by_name, placements, rec, Rg, origin, scale, width, step
         log(f'  depth map {ref}: {100 * ok.mean():.0f}% of pixels passed the photo test ({time.time() - t0:.0f} s)')
     # pass 2: keep only points that another photo's depth map agrees with
     all_pts, all_cols = [], []
+    depth_m = {}
     for ref in names:
         depth, ok = maps[ref]
         X = C[ref] + depth[..., None].astype(np.float64) * raysw[ref]
@@ -268,13 +274,53 @@ def dense_points(photos_by_name, placements, rec, Rg, origin, scale, width, step
             expect = np.linalg.norm(pc, axis=-1)
             agree += (okn & (np.abs(dn - expect) < 0.03 * expect)).astype(np.int32)
         keep = ok & (agree >= min_consistent)
+        depth_m[ref] = np.where(keep, depth * scale, 0).astype(np.float32)
         pts = ((Rg @ X[keep].T).T - origin) * scale
         all_pts.append(pts)
         all_cols.append(color[ref][keep])
         report.append(f'Dense: {ref} kept {int(keep.sum()):,} points ({100 * keep.mean():.0f}% of pixels; {100 * keep.sum() / max(ok.sum(), 1):.0f}% of those that passed the photo test)')
     if not all_pts:
-        return np.zeros((0, 3)), np.zeros((0, 3), np.uint8)
-    return np.concatenate(all_pts), np.concatenate(all_cols)
+        return np.zeros((0, 3)), np.zeros((0, 3), np.uint8), depth_m
+    return np.concatenate(all_pts), np.concatenate(all_cols), depth_m
+
+
+def write_depth(path, depth_m):
+    """Depth in millimeters as 16-bit values, gzip-compressed, with a small header (width, height). 0 means no depth."""
+    h, w = depth_m.shape
+    mm = np.clip(np.round(depth_m * 1000), 0, 65535).astype('<u2')
+    with gzip.open(path, 'wb', compresslevel=6) as f:
+        f.write(struct.pack('<II', w, h))
+        f.write(mm.tobytes())
+
+
+def write_tour(tour_dir, photos_by_name, placements, depth_m, pts, cols, web_width, lens, name, report):
+    """A folder that can be hosted as is. The viewer opens it with ?tour=path/to/tour.json."""
+    (tour_dir / 'panos').mkdir(parents=True, exist_ok=True)
+    (tour_dir / 'depth').mkdir(exist_ok=True)
+    entries = []
+    for pl in placements:
+        n = pl['name']
+        img = cv2.imread(str(photos_by_name[n]), cv2.IMREAD_COLOR)
+        h, w = img.shape[:2]
+        if w > web_width:
+            img = cv2.resize(img, (web_width, web_width // 2), interpolation=cv2.INTER_AREA)
+        fname = pathlib.Path(n).with_suffix('.jpg').name
+        cv2.imwrite(str(tour_dir / 'panos' / fname), img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        e = dict(pl)
+        e['file'] = f'panos/{fname}'
+        if n in depth_m:
+            write_depth(tour_dir / 'depth' / f'{n}.d16', depth_m[n])
+            e['depth'] = f'depth/{n}.d16'
+        entries.append(e)
+    doc = {'app': 'dinto-space-viewer', 'version': 2, 'name': name, 'created': datetime.date.today().isoformat(),
+           'lens': lens, 'start': entries[0]['name'], 'panos': entries}
+    if len(pts):
+        with gzip.open(tour_dir / 'cloud.xyz.gz', 'wt', compresslevel=6) as f:
+            np.savetxt(f, np.column_stack([pts, cols]), fmt='%.3f %.3f %.3f %d %d %d')
+        doc['cloud'] = 'cloud.xyz.gz'
+    (tour_dir / 'tour.json').write_text(json.dumps(doc, indent=2))
+    total = sum(f.stat().st_size for f in tour_dir.rglob('*') if f.is_file())
+    report.append(f'Tour folder written: {len(entries)} photos, {total / 1e6:.0f} MB in total. Host the whole folder and open it with ?tour=.../tour.json')
 
 
 def voxel_thin(pts, cols, size):
@@ -331,6 +377,9 @@ def main():
     ap.add_argument('--min-ncc', type=float, default=0.80, help='how well patches must agree (0 to 1)')
     ap.add_argument('--min-consistent', type=int, default=1, help='how many other photos must agree with a point (default 1)')
     ap.add_argument('--voxel', type=float, default=0.02, help='thin the cloud to one point per cube of this size, in meters')
+    ap.add_argument('--tour-name', default=None, help='name shown in the viewer (default: the photo folder name)')
+    ap.add_argument('--web-width', type=int, default=6144, help='width of the photos in the tour folder (6144 is sharp, 4096 is lighter)')
+    ap.add_argument('--no-tour', action='store_true', help='skip writing the tour folder')
     ap.add_argument('--gpu', action='store_true', help='use the GPU for feature extraction (needs a CUDA build)')
     ap.add_argument('--threads', type=int, default=-1)
     ap.add_argument('--keep-work', action='store_true', help='keep the COLMAP working folder')
@@ -362,9 +411,10 @@ def main():
         doc = {'app': 'dinto-space-viewer', 'version': 1, 'space': a.photos.name, 'panos': placements, 'plan': None}
         (a.out / 'panorama-placements.json').write_text(json.dumps(doc, indent=2))
         pts, cols = spts, scols
+        depth_m = {}
         if not a.no_dense and len(placements) >= 2:
             log('3/3  Measuring depth between neighboring photos')
-            dpts, dcols = dense_points(by_name, placements, rec, Rg, origin, scale, a.dense_width, a.depth_steps, a.near, a.far,
+            dpts, dcols, depth_m = dense_points(by_name, placements, rec, Rg, origin, scale, a.dense_width, a.depth_steps, a.near, a.far,
                                        min(a.neighbors, len(placements) - 1), 7, a.min_ncc, 0.25, a.min_consistent, report)
             if len(dpts):
                 pts, cols = dpts, dcols
@@ -376,6 +426,8 @@ def main():
         with open(a.out / 'cloud.xyz', 'w') as f:
             np.savetxt(f, np.column_stack([pts, cols]), fmt='%.4f %.4f %.4f %d %d %d')
         report.append(f'Point cloud written: {len(pts):,} points ({"dense" if not a.no_dense else "sparse"}).')
+        if not a.no_tour:
+            write_tour(a.out / 'tour', by_name, placements, depth_m, pts, cols, a.web_width, a.lens_height, a.tour_name or a.photos.name, report)
         extent = pts.max(0) - pts.min(0) if len(pts) else np.zeros(3)
         report.append(f'Extent of the cloud: {extent[0]:.1f} x {extent[1]:.1f} x {extent[2]:.1f} m')
     finally:
